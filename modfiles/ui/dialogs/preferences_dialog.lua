@@ -1,199 +1,304 @@
-local general_preference_names = {"ignore_barreling_recipes", "ignore_recycling_recipes", "ingredient_satisfaction",
-  "round_button_numbers"}
-local production_preference_names = {"pollution", "line_comments"}
+preferences_dialog = {}
 
--- Handles populating the preferences dialog
-function open_preferences_dialog(flow_modal_dialog)
-    flow_modal_dialog.parent.caption = {"fp.preferences"}
-    flow_modal_dialog.style.padding = 6
+-- ** LOCAL UTIL **
+local function add_preference_box(content_frame, type)
+    local bordered_frame = content_frame.add{type="frame", direction="vertical", style="fp_frame_bordered_stretch"}
 
-    -- Info
-    local label_preferences_info = flow_modal_dialog.add{type="label", name="label_preferences_info", 
-      caption={"fp.preferences_info"}}
-    label_preferences_info.style.single_line = false
-    label_preferences_info.style.bottom_margin = 4
+    local caption = {"fp.info_label", {"fp.preference_".. type .. "_title"}}
+    local tooltip = {"fp.preference_".. type .. "_title_tt"}
+    bordered_frame.add{type="label", caption=caption, tooltip=tooltip, style="caption_label"}
 
-    -- Alt action
-    local table_alt_actions = flow_modal_dialog.add{type="table", name="table_alt_actions", column_count=2}
-    table_alt_actions.style.horizontal_spacing = 16
-    table_alt_actions.style.margin = {8, 0}
-    table_alt_actions.add{type="label", name="label_alt_actions", caption={"", {"fp.preferences_alt_action"}, ":"}, style="fp_preferences_title_label", tooltip={"fp.preferences_alt_action_tt"}}
+    return bordered_frame
+end
 
-    local items = {}
-    for action, index in pairs(global.alt_actions) do table.insert(items, {"fp.alt_action_" .. action}) end
-    table_alt_actions.add{type="drop-down", name="fp_drop_down_alt_action", items=items, selected_index=1}
+local function refresh_defaults_table(player, ui_elements, type, category_id)
+    local table_prototypes, all_prototypes, category_addendum
 
-    -- General preferences
-    flow_modal_dialog.add{type="label", name="label_general_info", caption={"", {"fp.preferences_title_general"}, ":"},
-      style="fp_preferences_title_label", tooltip={"fp.preferences_title_general_tt"}}
-    local table_general_prefs = flow_modal_dialog.add{type="table", name="table_general_preferences", column_count=1}
-    table_general_prefs.style.top_margin = 2
-    table_general_prefs.style.bottom_margin = 8
-    table_general_prefs.style.left_margin = 16
-
-    -- Creates the checkbox for a general preference 
-    local function add_general_preference(name)
-        table_general_prefs.add{type="checkbox", name=("fp_checkbox_preferences_" .. name), state=false,
-          caption={"", " ", {"fp.preferences_" .. name}, " [img=info]"}, tooltip={"fp.preferences_" .. name .. "_tt"}}
+    if not category_id then
+        table_prototypes = ui_elements[type]
+        all_prototypes = global["all_" .. type][type]
+        category_addendum = ""
+    else
+        table_prototypes = ui_elements[type][category_id]
+        all_prototypes = global["all_" .. type].categories[category_id][type]
+        category_addendum = ("_" .. category_id)
     end
 
-    for _, preference_name in ipairs(general_preference_names) do add_general_preference(preference_name) end
+    table_prototypes.clear()
+    local default_proto = prototyper.defaults.get(player, type, category_id)
 
-    -- Production table preferences
-    flow_modal_dialog.add{type="label", name="label_production_info", caption={"", {"fp.preferences_title_production"}, ":"},
-      style="fp_preferences_title_label", tooltip={"fp.preferences_title_production_tt"}}
-    local table_production_prefs = flow_modal_dialog.add{type="table", name="table_production_preferences", column_count=1}
-    table_production_prefs.style.top_margin = 2
-    table_production_prefs.style.bottom_margin = 8
-    table_production_prefs.style.left_margin = 16
+    for prototype_id, prototype in ipairs(all_prototypes) do
+        local selected = (default_proto.id == prototype_id)
+        local style = (selected) and "flib_slot_button_green" or "flib_slot_button_default"
+        local first_line = (selected) and {"fp.annotated_title", prototype.localised_name, {"fp.selected"}}
+            or prototype.localised_name
+        local tooltip = {"", first_line, "\n", ui_util.get_attributes(type, prototype)}
 
-    -- Creates the checkbox for a production preference 
-    local function add_production_preference(name)
-        table_production_prefs.add{type="checkbox", name=("fp_checkbox_production_preferences_" .. name), state=false,
-          caption={"", " ", {"fp.production_preferences_" .. name}, " [img=info]"},
-          tooltip={"fp.production_preferences_" .. name .. "_tt"}}
+        local sprite_button = table_prototypes.add{type="sprite-button", sprite=prototype.sprite, tooltip=tooltip,
+          name="fp_sprite-button_preference_default_" .. type .. "_" .. prototype_id .. category_addendum,
+          style=style, mouse_button_filter={"left"}}
+        sprite_button.style.width = 36
+        sprite_button.style.height = 36
     end
-
-    for _, preference_name in ipairs(production_preference_names) do add_production_preference(preference_name) end
-    
-    -- Prototype preferences
-    local function add_prototype_preference(name)
-        flow_modal_dialog.add{type="label", name=("label_".. name .. "_info"), caption={"", {"fp.preferences_title_" .. name}, ":"},
-          style="fp_preferences_title_label", tooltip={"fp.preferences_title_" .. name .. "_tt"}}
-
-        flow_modal_dialog.add{type="table", name=("table_all_" .. name), column_count=12, style="fp_preferences_table"}
-    end
-
-    local proto_preference_names = {"belts", "fuels"}
-    -- Beacons are only needed when there is more than one beacon (ie. not vanilla)
-    if #global.all_beacons.beacons > 1 then table.insert(proto_preference_names, "beacons") end
-    for _, preference_name in ipairs(proto_preference_names) do add_prototype_preference(preference_name) end
-
-    -- Machine preferences (needs custom construction as it is a 2d-prototype)
-    flow_modal_dialog.add{type="label", name="label_machines_info", caption={"", {"fp.preferences_title_machines"}, ":"},
-      style="fp_preferences_title_label", tooltip={"fp.preferences_title_machines_tt"}}
-
-    local table_all_machines = flow_modal_dialog.add{type="table", name="table_all_machines", column_count=2}
-    table_all_machines.style.top_margin = 4
-    table_all_machines.style.left_padding = 6
-    table_all_machines.style.bottom_padding = 4
-
-    refresh_preferences_dialog(flow_modal_dialog.gui.player)
 end
 
 
--- Creates the modal dialog to change your preferences
-function refresh_preferences_dialog(player)
-    local flow_modal_dialog = player.gui.screen["fp_frame_modal_dialog"]["flow_modal_dialog"]
-    local preferences = get_preferences(player)
+local preference_structures = {}
 
-    -- Alt action
-    local drop_down_alt_actions = flow_modal_dialog["table_alt_actions"]["fp_drop_down_alt_action"]
-    drop_down_alt_actions.selected_index = global.alt_actions[preferences.alt_action]
+function preference_structures.checkboxes(preferences, content_frame, type, preference_names)
+    local preference_box = add_preference_box(content_frame, type)
+    local flow_checkboxes = preference_box.add{type="flow", direction="vertical"}
 
-    -- General preferences
-    local table_general_prefs = flow_modal_dialog["table_general_preferences"]
-    for _, preference_name in ipairs(general_preference_names) do
-        table_general_prefs["fp_checkbox_preferences_" .. preference_name].state = preferences[preference_name]
+    for _, pref_name in ipairs(preference_names) do
+        local identifier = type .. "_" .. pref_name
+        local caption = {"fp.info_label", {"fp.preference_" .. identifier}}
+        local tooltip ={"fp.preference_" .. identifier .. "_tt"}
+        flow_checkboxes.add{type="checkbox", name=("fp_checkbox_preference_" .. identifier),
+          state=preferences[pref_name], caption=caption, tooltip=tooltip}
+    end
+end
+
+function preference_structures.mb_defaults(preferences, content_frame)
+    local mb_defaults = preferences.mb_defaults
+
+    local preference_box = add_preference_box(content_frame, "mb_defaults")
+    local flow_mb_defaults = preference_box.add{type="flow", direction="horizontal"}
+    flow_mb_defaults.style.vertical_align = "center"
+
+
+    local function add_mb_default(type)
+        flow_mb_defaults.add{type="label", caption={"fp.pu_" .. type, 1}}
+
+        local choose_elem_button = flow_mb_defaults.add{type="choose-elem-button", elem_type="item",
+          name="fp_choose-elem-button_mb_default_" .. type, style="fp_sprite-button_inset_tiny",
+          elem_filters={{filter="type", type="module"}, {filter="flag", flag="hidden", mode="and", invert=true}}}
+        choose_elem_button.elem_value = (mb_defaults[type] ~= nil) and mb_defaults[type].name or nil
+        choose_elem_button.style.margin = {0, 12, 0, 4}
     end
 
-    -- Production preferences
-    local table_production_prefs = flow_modal_dialog["table_production_preferences"]
-    for _, preference_name in ipairs(production_preference_names) do
-        table_production_prefs["fp_checkbox_production_preferences_" .. preference_name].state
-          = preferences.optional_production_columns[preference_name]
-    end
+    add_mb_default("machine")
+    add_mb_default("beacon")
 
-    -- Prototype preferences
-    -- Refreshes the given prototype preference GUI, if it exists (for 1d-prototypes)
-    local function refresh_prototype_preference(name)
-        local pname = name .. "s"  -- 'plural_name'
-        local table_all = flow_modal_dialog["table_all_" .. pname]
-        if table_all == nil then return end  -- return if no preference for this prototype exist
-        table_all.clear()
 
-        for proto_id, proto in pairs(global["all_" .. pname][pname]) do
-            local button = table_all.add{type="sprite-button", name="fp_sprite-button_preferences_" .. name .. "_"
-              .. proto_id, sprite=proto.sprite, mouse_button_filter={"left"}}
-            
-            local tooltip = proto.localised_name
-            if get_preferences(player)["preferred_" .. name] == proto then
-                button.style = "fp_button_icon_medium_green"
-                tooltip = {"", tooltip, " (", {"fp.selected"}, ")"}
-            else 
-                button.style = "fp_button_icon_medium_hidden"
-            end
-            button.tooltip = {"", tooltip, "\n", ui_util.attributes[name](proto)}
+    flow_mb_defaults.add{type="label", caption={"fp.info_label", {"fp.preference_mb_default_amount"}},
+      tooltip={"fp.preference_mb_default_amount_tt"}}
+    local textfield_amount = flow_mb_defaults.add{type="textfield", name="fp_textfield_mb_default_ampimt",
+      text=mb_defaults.beacon_count}
+    ui_util.setup_numeric_textfield(textfield_amount, true, false)
+    textfield_amount.style.width = 40
+    textfield_amount.style.margin = {0, 8}
+end
+
+function preference_structures.prototypes(player, content_frame, ui_elements, type)
+    local preference_box = add_preference_box(content_frame, ("default_" .. type))
+    local table_prototypes = preference_box.add{type="table", column_count=3}
+    table_prototypes.style.horizontal_spacing = 20
+    table_prototypes.style.vertical_spacing = 8
+    table_prototypes.style.top_margin = 4
+
+    local function add_defaults_table(column_count, category_id)
+        local frame = table_prototypes.add{type="frame", direction="horizontal", style="fp_frame_deep_slots_small"}
+        frame.style.right_margin = 6
+        local table = frame.add{type="table", column_count=column_count, style="filter_slot_table"}
+
+        if category_id then
+            ui_elements[type] = ui_elements[type] or {}
+            ui_elements[type][category_id] = table
+        else
+            ui_elements[type] = table
         end
     end
 
-    local proto_preference_names = {"belt", "fuel", "beacon"}
-    for _, preference_name in ipairs(proto_preference_names) do refresh_prototype_preference(preference_name) end
+    local preferences = data_util.get("preferences", player)
+    local default_prototypes = preferences.default_prototypes[type]
+    if default_prototypes.structure_type == "simple" then
+        local all_prototypes = global["all_" .. type][type]
+        if #all_prototypes < 2 then preference_box.visible = false; return end
 
-    -- Machine preferences (needs custom construction as it is a 2d-prototype)
-    local table_all_machines = flow_modal_dialog["table_all_machines"]
-    table_all_machines.clear()
+        add_defaults_table(8, nil)
+        refresh_defaults_table(player, ui_elements, type, nil)
 
-    for category_id, category in ipairs(global.all_machines.categories) do
-        if #category.machines > 1 then
-            table_all_machines.add{type="label", name="label_" .. category_id, caption="'" .. category.name .. "':    "}
-            local table_machines = table_all_machines.add{type="table", name="table_machines_" .. category_id, column_count=8}
-            for machine_id, machine in ipairs(category.machines) do
-                local button_machine = table_machines.add{type="sprite-button", name="fp_sprite-button_preferences_machine_"
-                  .. category_id .. "_" .. machine_id, sprite=machine.sprite, mouse_button_filter={"left"}}
-                  
-                local tooltip = machine.localised_name
-                if data_util.machine.get_default(player, category.name) == machine then
-                    button_machine.style = "fp_button_icon_medium_green"
-                    tooltip = {"", tooltip, " (", {"fp.selected"}, ")"}
-                else 
-                    button_machine.style = "fp_button_icon_medium_hidden"
+    else  -- structure_type == "complex"
+        local all_categories = global["all_" .. type].categories
+        if #all_categories == 0 then preference_box.visible = false; return end
+
+        local any_category_visible = false
+        for category_id, category in ipairs(all_categories) do
+            local all_prototypes = category[type]
+
+            if #all_prototypes > 1 then
+                any_category_visible = true
+
+                table_prototypes.add{type="label", caption={"fp.quoted_title", category.name}}
+                table_prototypes.add{type="empty-widget", style="flib_horizontal_pusher"}
+
+                add_defaults_table(8, category_id)
+                refresh_defaults_table(player, ui_elements, type, category_id)
+            end
+        end
+        if not any_category_visible then preference_box.visible = false end
+    end
+end
+
+
+local function handle_checkbox_preference_change(player, element)
+    local type = split_string(element.name, "_")[4]
+    local preference_name = string.gsub(element.name, "fp_checkbox_preference_" .. type .. "_", "")
+
+    data_util.get("preferences", player)[preference_name] = element.state
+    local refresh = data_util.get("modal_data", player).refresh
+
+    if type == "production" or preference_name == "round_button_numbers" then
+        refresh.production_table = true
+    end
+
+    if preference_name == "ingredient_satisfaction" then
+        refresh.production_table = true
+        -- Only recalculate if the satisfaction data will actually be shown now
+        refresh.ingredient_satisfaction = (element.state)
+    end
+end
+
+local function handle_mb_default_change(player, element)
+    local mb_defaults = data_util.get("preferences", player).mb_defaults
+    local type = string.gsub(element.name, "fp_choose%-elem%-button_mb_default_", "")
+    local module_name = element.elem_value
+
+    if module_name == nil then
+        mb_defaults[type] = nil
+    else
+        -- Find the appropriate prototype from the list by its name
+        for _, category in pairs(global.all_modules.categories) do
+            for _, module_proto in pairs(category.modules) do
+                if module_proto.name == module_name then
+                    mb_defaults[type] = module_proto
+                    return
                 end
-                button_machine.tooltip = {"", tooltip, "\n", ui_util.attributes.machine(machine)}
+            end
+        end
+    end
+end
+
+local function handle_default_prototype_change(player, element, metadata)
+    local split_name = split_string(element.name, "_")
+    local type, prototype_id, category_id = split_name[5], split_name[6], split_name[7]
+
+    local modal_data = data_util.get("modal_data", player)
+    if type == "belts" then modal_data.refresh.main_dialog = true end
+
+    prototyper.defaults.set(player, type, prototype_id, category_id)
+    refresh_defaults_table(player, modal_data.ui_elements, type, category_id)
+
+    -- If this was an alt-click, set this prototype on every category that also has it
+    if metadata.alt and type == "machines" then
+        local new_default_prototype = prototyper.defaults.get(player, type, category_id)
+
+        for secondary_category_id, category in pairs(global["all_" .. type].categories) do
+            local secondary_prototype_id = category.map[new_default_prototype.name]
+
+            if secondary_prototype_id ~= nil then
+                prototyper.defaults.set(player, type, secondary_prototype_id, secondary_category_id)
+                refresh_defaults_table(player, modal_data.ui_elements, type, secondary_category_id)
             end
         end
     end
 end
 
 
--- Saves the given alt_action change
-function handle_alt_action_change(player, selected_index)
-    for action, index in pairs(global.alt_actions) do
-        if selected_index == index then
-            get_preferences(player).alt_action = action
-            refresh_main_dialog(player)
-            return
-        end
+-- ** TOP LEVEL **
+preferences_dialog.dialog_settings = (function(_) return {
+    caption = {"fp.preferences"},
+    create_content_frame = false,
+    force_auto_center = true
+} end)
+
+preferences_dialog.gui_events = {
+    on_gui_click = {
+        {
+            pattern = "^fp_sprite%-button_preference_default_[a-z]+_%d+_?%d*$",
+            handler = (function(player, element, metadata)
+                handle_default_prototype_change(player, element, metadata)
+            end)
+        }
+    },
+    on_gui_text_changed = {
+        {
+            name = "fp_textfield_mb_default_amount",
+            handler = (function(player, element)
+                local mb_defaults = data_util.get("preferences", player).mb_defaults
+                mb_defaults.beacon_count = tonumber(element.text)
+            end)
+        }
+    },
+    on_gui_checked_state_changed = {
+        {
+            pattern = "^fp_checkbox_preference_[a-z]+_[a-z_]+$",
+            handler = (function(player, element)
+                handle_checkbox_preference_change(player, element)
+            end)
+        }
+    },
+    on_gui_elem_changed = {
+        {
+            pattern = "^fp_choose%-elem%-button_mb_default_[a-z]+$",
+            handler = (function(player, element)
+                handle_mb_default_change(player, element)
+            end)
+        }
+    }
+}
+
+function preferences_dialog.open(player, modal_data)
+    local preferences = data_util.get("preferences", player)
+    local ui_elements = modal_data.ui_elements
+    modal_data.refresh = {}
+
+    local flow_content = ui_elements.dialog_flow.add{type="flow", direction="horizontal"}
+    flow_content.style.horizontal_spacing = 12
+    local main_dialog_dimensions = data_util.get("ui_state", player).main_dialog_dimensions
+    flow_content.style.maximal_height = main_dialog_dimensions.height * 0.75
+
+    local function add_content_frame()
+        local content_frame = flow_content.add{type="frame", direction="vertical", style="inside_shallow_frame"}
+        content_frame.style.vertically_stretchable = true
+
+        local scroll_pane = content_frame.add{type="scroll-pane", style="fp_scroll_pane_inside_content_frame"}
+        return scroll_pane
     end
+
+    local left_content_frame = add_content_frame()
+
+    local bordered_frame = left_content_frame.add{type="frame", direction="vertical", style="fp_frame_bordered_stretch"}
+    local label_preferences_info = bordered_frame.add{type="label", caption={"fp.preferences_info"}}
+    label_preferences_info.style.single_line = false
+
+    local general_preference_names = {"ignore_barreling_recipes", "ignore_recycling_recipes",
+       "ingredient_satisfaction", "round_button_numbers"}
+    preference_structures.checkboxes(preferences, left_content_frame, "general", general_preference_names)
+
+    local production_preference_names = {"pollution_column", "line_comment_column"}
+    preference_structures.checkboxes(preferences, left_content_frame, "production", production_preference_names)
+
+    preference_structures.mb_defaults(preferences, left_content_frame)
+
+    preference_structures.prototypes(player, left_content_frame, ui_elements, "belts")
+    preference_structures.prototypes(player, left_content_frame, ui_elements, "beacons")
+
+    local right_content_frame = add_content_frame()
+
+    preference_structures.prototypes(player, right_content_frame, ui_elements, "fuels")
+    preference_structures.prototypes(player, right_content_frame, ui_elements, "machines")
 end
 
--- Saves the given general preference change
-function handle_general_preference_change(player, radiobutton)
-    local preference = string.gsub(radiobutton.name, "fp_checkbox_preferences_", "")
-    get_preferences(player)[preference] = radiobutton.state
-    
-    if preference == "ingredient_satisfaction" or preference == "round_button_numbers" then
-        if radiobutton.state == true then calculation.util.update_all_ingredient_satisfactions(player) end
-        refresh_production_pane(player)
+function preferences_dialog.close(player, _)
+    local refresh = data_util.get("modal_data", player).refresh
+
+    if refresh.ingredient_satisfaction then
+        local player_table = get_table(player)
+        Factory.update_ingredient_satisfactions(player_table.factory)
+        Factory.update_ingredient_satisfactions(player_table.archive)
     end
-end
 
--- Saves the given production preference change
-function handle_production_preference_change(player, radiobutton)
-    local preference = string.gsub(radiobutton.name, "fp_checkbox_production_preferences_", "")
-    get_preferences(player).optional_production_columns[preference] = radiobutton.state
-    refresh_production_pane(player)
-end
-
--- Changes the preferred prototype for the given prototype preference type
-function handle_preferences_change(player, type, id)
-    get_preferences(player)["preferred_" .. type] = global["all_" .. type .. "s"][type .. "s"][id]
-    refresh_preferences_dialog(player)
-    if type == "belt" then refresh_production_pane(player) end
-end
-
--- Changes the default machine of the given category
-function handle_preferences_machine_change(player, category_id, id)
-    data_util.machine.set_default(player, category_id, id)
-    refresh_preferences_dialog(player)
+    if refresh.main_dialog then main_dialog.refresh(player)
+    elseif refresh.production_table then production_table.refresh(player) end
 end

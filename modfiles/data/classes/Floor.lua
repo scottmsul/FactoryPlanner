@@ -1,62 +1,77 @@
 -- 'Class' representing a floor of a subfactory with individual assembly lines
 Floor = {}
 
-function Floor.init(line)
+function Floor.init(creating_line)
     local floor = {
-        level = nil,
-        origin_line = line,
-        Line = Collection.init(),
+        level = 1,  -- top floor has a level of 1, it's initialized with Floor.init(nil)
+        origin_line = nil,  -- set below
+        Line = Collection.init("Line"),
         valid = true,
         class = "Floor"
     }
 
-    -- Level becomes one more than the parent, or 1 if it's the top floor
-    -- The top floor is initialised with Floor.init(nil)
-    floor.level = line and (line.parent.level + 1) or 1
+    -- Move given line, if it exists, to the subfloor, and create a new origin line
+    if creating_line ~= nil then
+        -- Subfloors have a level that is 1 higher than their creating_line's floor
+        floor.level = creating_line.parent.level + 1
+        floor.parent = creating_line.parent
 
-    -- If a line is given, add it as the first line of the new floor
-    -- (This means that this floor is the subfloor of the given line)
-    if line ~= nil then
-        local subline = cutil.deepcopy(line)
-        subline.comment = nil
-        Floor.add(floor, subline)
+        local origin_line = Line.init(nil)
+        -- No need to set a machine in this case
+
+        origin_line.subfloor = floor
+        floor.origin_line = origin_line
+
+        Floor.replace(creating_line.parent, creating_line, origin_line)
+        Floor.add(floor, creating_line)
     end
 
     return floor
 end
+
 
 function Floor.add(self, object)
     object.parent = self
     return Collection.add(self[object.class], object)
 end
 
+function Floor.insert_at(self, gui_position, object)
+    object.parent = self
+    return Collection.insert_at(self[object.class], gui_position, object)
+end
+
 function Floor.remove(self, dataset)
-    -- Remove the subfloor(s) associated to a line, if present
+    -- Remove the subfloor(s) associated to a line recursively, so they don't hang around
     if dataset.class == "Line" and dataset.subfloor ~= nil then
-        Subfactory.remove(self.parent, dataset.subfloor)
+        for _, line in pairs(Floor.get_in_order(dataset.subfloor, "Line")) do
+            if line.subfloor then Floor.remove(dataset.subfloor, line) end
+        end
+        Collection.remove(self.parent.Floor, dataset.subfloor)
+    end
+
+    -- If the first line of a subfloor is removed, the whole subfloor needs to go
+    if dataset.class == "Line" and self.level > 1 and dataset.gui_position == 1 then
+        Floor.remove(self.origin_line.parent, self.origin_line)
     end
 
     return Collection.remove(self[dataset.class], dataset)
 end
 
--- This leaves the object in disrepair, but it will be deleted anyway
-function Floor.remove_subfloors(self)
-    for _, line in pairs(self.Line.datasets) do
-        if line.subfloor ~= nil then
-            Subfactory.remove(self.parent, line.subfloor)
-        end
-    end
-end
-
--- Floor deletes itself if it only has it's mandatory first line
-function Floor.delete_empty(self)
+-- Floor deletes itself if it consists of only its mandatory first line
+function Floor.remove_if_empty(self)
     if self.level > 1 and self.Line.count == 1 then
-        self.origin_line.subfloor = nil
+        local origin_line = self.origin_line
+        local first_line = self.Line.datasets[1]
+
+        Floor.replace(origin_line.parent, origin_line, first_line)
+        -- No need to remove eventual subfloors to the given floor,
+        -- as there can't be any if the floor is empty
         Subfactory.remove(self.parent, self)
     end
 end
 
 function Floor.replace(self, dataset, object)
+    object.parent = self
     return Collection.replace(self[dataset.class], dataset, object)
 end
 
@@ -70,6 +85,10 @@ end
 
 function Floor.shift(self, dataset, direction)
     return Collection.shift(self[dataset.class], dataset, direction)
+end
+
+function Floor.shift_to_end(self, dataset, direction)
+    return Collection.shift_to_end(self[dataset.class], dataset, direction)
 end
 
 
@@ -90,20 +109,20 @@ function Floor.get_component_data(self, component_table)
     end
 
     for _, line in pairs(Floor.get_in_order(self, "Line")) do
-        if component_table ~= nil and line.subfloor ~= nil then
-            --[[ continue ]]
-            
-        else
-            local ceil_machine_count = math.ceil(line.machine.count)
+        -- Doesn't count subfloors when looking at this specific floors. Maybe it should, which
+        -- would mean the subfactory machine total is equal to the floor total of the top floor
+        if line.subfloor == nil then
+            local machine = line.machine
+            local ceil_machine_count = math.ceil(machine.count)
 
             -- Machines
             add_to_count(components.machines, {
-                proto = line.machine.proto,
+                proto = machine.proto,
                 amount = ceil_machine_count
             })
 
             -- Modules
-            for _, module in pairs(Line.get_in_order(line, "Module")) do
+            for _, module in pairs(Machine.get_in_order(machine, "Module")) do
                 add_to_count(components.modules, {
                     proto = module.proto,
                     amount = ceil_machine_count * module.amount
@@ -119,7 +138,7 @@ function Floor.get_component_data(self, component_table)
                     proto = beacon.proto,
                     amount = ceil_total_amount
                 })
-                
+
                 add_to_count(components.modules, {
                     proto = beacon.module.proto,
                     amount = ceil_total_amount * beacon.module.amount
@@ -127,30 +146,65 @@ function Floor.get_component_data(self, component_table)
             end
         end
     end
-    
+
     return components
 end
 
 
--- Update validity of this floor and its subfloors
-function Floor.update_validity(self)
-    local classes = {Line = "Line"}
-    self.valid = data_util.run_validation_updates(self, classes)
-    if self.origin_line ~= nil then self.origin_line.valid = self.valid end
+function Floor.pack(self)
+    return {
+        Line = Collection.pack(self.Line),
+        level = self.level,
+        class = self.class
+    }
+end
+
+-- This unpack-function differs in that it gets called with the floor already existing
+-- This function should thus unpack itself into that floor, instead of creating a new one
+function Floor.unpack(packed_self, self)
+    -- This can't use Collection.unpack for its lines because of its recursive nature
+    -- It might also be possible and more correct to move some of this functionality
+    -- to the Line-class, but this works and is more understandable
+
+    for _, packed_line in pairs(packed_self.Line.objects) do
+        if packed_line.subfloor ~= nil then
+            -- Add the first subfloor line as a line in this floor
+            local subfloor_line = Line.unpack(packed_line.subfloor.Line.objects[1])
+            Floor.add(self, subfloor_line)
+
+            -- Use that line to create the subfloor, which moves it to the newly created floor
+            local subfloor = Floor.init(subfloor_line)
+            subfloor.origin_line.comment = packed_line.comment  -- carry over the origin_line's comment
+            Subfactory.add(self.parent, subfloor)
+
+            -- Remove the first subfloor line as it has already been created by initializing the subfloor with it
+            table.remove(packed_line.subfloor.Line.objects, 1)
+
+            Floor.unpack(packed_line.subfloor, subfloor)
+
+        else  -- a normal line just gets unpacked and added straight away
+            Floor.add(self, Line.unpack(packed_line))
+        end
+    end
+
+    -- return value is not needed here
+end
+
+
+-- Needs validation: Line
+function Floor.validate(self)
+    self.valid = Collection.validate_datasets(self.Line)
     return self.valid
 end
 
--- Tries to repair all associated datasets, removing the unrepairable ones
-function Floor.attempt_repair(self, player)
+-- Needs repair: Line
+function Floor.repair(self, player)
+    -- Unrepairable lines get removed, so the subfactory will always be valid afterwards
+    Collection.repair_datasets(self.Line, player)
     self.valid = true
-    
-    local classes = {Line = "Line"}
-    data_util.run_invalid_dataset_repair(player, self, classes)
 
-    -- Remove floor if there are no recipes except the top one left
-    if self.level > 1 and self.Line.count <= 1 then
-        self.valid = false
-    end
+    -- Make this floor remove itself if it's empty after repairs
+    Floor.remove_if_empty(self)
 
-    return self.valid  -- Note success here so Line can remove subfloors if it was unsuccessful
+    return true  -- make sure this floor is not removed by the calling Collection-function
 end

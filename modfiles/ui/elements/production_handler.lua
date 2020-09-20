@@ -1,88 +1,151 @@
+production_handler = {}
+
+-- ** LOCAL UTIL **
+local function compile_machine_chooser_buttons(player, line, applicable_prototypes)
+    local round_button_numbers = data_util.get("preferences", player).round_button_numbers
+    local timescale = data_util.get("context", player).subfactory.timescale
+
+    local current_proto = line.machine.proto
+    local button_definitions = {}
+
+    for _, machine_proto in ipairs(applicable_prototypes) do
+        local crafts_per_tick = calculation.util.determine_crafts_per_tick(machine_proto,
+          line.recipe.proto, Line.get_total_effects(line, player))
+        local machine_count = calculation.util.determine_machine_count(crafts_per_tick,
+          line.uncapped_production_ratio, timescale, machine_proto.is_rocket_silo)
+
+        local button_number = (round_button_numbers) and math.ceil(machine_count) or machine_count
+
+        -- Have to do this stupid crap because localisation plurals only work on integers
+        local formatted_number = ui_util.format_number(machine_count, 4)
+        local plural_parameter = (formatted_number == "1") and 1 or 2
+        local amount_line = {"fp.two_word_title", formatted_number, {"fp.pl_machine", plural_parameter}}
+
+        local definition = {
+            element_id = machine_proto.id,
+            sprite = machine_proto.sprite,
+            button_number = button_number,
+            localised_name = machine_proto.localised_name,
+            amount_line = amount_line,
+            tooltip_appendage = ui_util.get_attributes("machines", machine_proto),
+            selected = (current_proto.id == machine_proto.id)
+        }
+
+        table.insert(button_definitions, definition)
+    end
+
+    return button_definitions
+end
+
+local function compile_fuel_chooser_buttons(player, line, applicable_prototypes)
+    local ui_state = data_util.get("ui_state", player)
+    local view_name = ui_state.view_state.selected_view.name
+    local timescale = ui_state.context.subfactory.timescale
+
+    local current_proto = line.machine.fuel.proto
+    local button_definitions = {}
+
+    for _, fuel_proto in pairs(applicable_prototypes) do
+        local category_id = global.all_fuels.map[fuel_proto.category]
+
+        local energy_consumption = calculation.util.determine_energy_consumption(line.machine.proto, line.machine.count,
+          line.total_effects)  -- don't care about mining productivity in this case, only the consumption-effect
+        local raw_fuel_amount = calculation.util.determine_fuel_amount(energy_consumption, line.machine.proto.burner,
+          fuel_proto.fuel_value, timescale)
+
+        -- TODO this util function is so crappy
+        local fuel_amount, appendage = ui_util.determine_item_amount_and_appendage(player, view_name,
+            fuel_proto.type, raw_fuel_amount, line.machine)
+        local amount_line = {"fp.two_word_title", ui_util.format_number(fuel_amount, 4), appendage}
+
+
+        local definition = {
+            element_id = category_id .. "_" .. fuel_proto.id,
+            sprite = fuel_proto.sprite,
+            button_number = fuel_amount,
+            localised_name = fuel_proto.localised_name,
+            amount_line = amount_line,
+            tooltip_appendage = ui_util.get_attributes("fuels", fuel_proto),
+            selected = (current_proto.type == fuel_proto.type and current_proto.id == fuel_proto.id)
+        }
+
+        table.insert(button_definitions, definition)
+    end
+
+    return button_definitions
+end
+
+
+-- ** TOP LEVEL **
 -- Handles any clicks on the recipe icon of an (assembly) line
-function handle_line_recipe_click(player, line_id, click, direction, action, alt)
+function production_handler.handle_line_recipe_click(player, line_id, click, direction, action, alt)
     local ui_state = get_ui_state(player)
     local subfactory = ui_state.context.subfactory
     local floor = ui_state.context.floor
     local line = Floor.get(floor, "Line", line_id)
 
     local archive_status = ui_util.check_archive_status(player)
-    
-    if alt then
+
+    if alt and direction == nil then
+        local relevant_line = (line.subfloor == nil) and line or Floor.get(line.subfloor, "Line", 1)
         ui_util.execute_alt_action(player, "show_recipe",
-          {recipe=line.recipe.proto, line_products=Line.get_in_order(line, "Product")})
+          {recipe=relevant_line.recipe.proto, line_products=Line.get_in_order(line, "Product")})
 
     elseif direction ~= nil then  -- Shift (assembly) line in the given direction
         if archive_status then return end
 
+        local shifting_function = (alt) and Floor.shift_to_end or Floor.shift
         -- Can't shift second line into the first position on subfloors
         -- (Top line ignores interaction, so no special handling there)
-        if not(direction == "negative" and floor.level > 1 and line.gui_position == 2) 
-          and Floor.shift(floor, line, direction) then
+        if not(direction == "negative" and floor.level > 1 and line.gui_position == 2)
+          and shifting_function(floor, line, direction) then
             calculation.update(player, subfactory, true)
         else
             local direction_string = (direction == "negative") and {"fp.up"} or {"fp.down"}
             local message = {"fp.error_list_item_cant_be_shifted", {"fp.lrecipe"}, direction_string}
-            ui_util.message.enqueue(player, message, "error", 1, false)
+            titlebar.enqueue_message(player, message, "error", 1, true)
         end
-        
-        refresh_current_activity(player)
 
     else
         -- Attaches a subfloor to this line
         if click == "left" then
-            if line.subfloor == nil then  -- create new subfloor
+            local subfloor = line.subfloor
+            if subfloor == nil then  -- create new subfloor
                 if archive_status then return end
 
-                local subfloor = Floor.init(line)
-                line.subfloor = Subfactory.add(subfactory, subfloor)
+                subfloor = Floor.init(line)  -- attaches itself to the given line automatically
+                Subfactory.add(subfactory, subfloor)
                 calculation.update(player, subfactory, false)
             end
-            ui_state.current_activity = nil
-            ui_util.context.set_floor(player, line.subfloor)
-            refresh_main_dialog(player)
-            
+
+            ui_util.context.set_floor(player, subfloor)
+            main_dialog.refresh(player)
+
         -- Handle removal of clicked (assembly) line
         elseif click == "right" and action == "delete" then
             if archive_status then return end
 
-            if line.subfloor == nil then
-                Floor.remove(floor, line)
-                calculation.update(player, subfactory, true)
-            else
-                if ui_state.current_activity == "deleting_line" then
-                    Floor.remove(floor, line)
-                    ui_state.current_activity = nil
-                    calculation.update(player, subfactory, true)
-                else
-                    ui_state.current_activity = "deleting_line"
-                    ui_state.context.line = line
-                    refresh_current_activity(player)
-                end
-            end
+            Floor.remove(floor, line)
+            calculation.update(player, subfactory, true)
         end
     end
 end
 
 
 -- Handles the changing of the percentage textfield (doesn't refresh the production table yet)
-function handle_percentage_change(player, element)
+function production_handler.handle_percentage_change(player, element)
     local ui_state = get_ui_state(player)
     local floor = ui_state.context.floor
     local line = Floor.get(floor, "Line", tonumber(string.match(element.name, "%d+")))
+    local relevant_line = (line.subfloor == nil) and line or Floor.get(line.subfloor, "Line", 1)
 
-    local new_percentage = tonumber(element.text) or 0
-    line.percentage = new_percentage
-    
-    -- Update related datasets
-    if line.subfloor then Floor.get(line.subfloor, "Line", 1).percentage = new_percentage
-    elseif line.id == 1 and floor.origin_line then floor.origin_line.percentage = new_percentage end
+    relevant_line.percentage = tonumber(element.text) or 0
 end
 
 -- Handles the player confirming the given percentage textfield by reloading and refocusing
-function handle_percentage_confirmation(player, element)
+function production_handler.handle_percentage_confirmation(player, element)
     local line_id = tonumber(string.match(element.name, "%d+"))
     local ui_state = get_ui_state(player)
-    ui_state.current_activity = nil
 
     local scroll_pane = element.parent.parent
     calculation.update(player, ui_state.context.subfactory, true)
@@ -91,163 +154,167 @@ end
 
 
 -- Handles the machine changing process
-function handle_machine_change(player, line_id, machine_id, click, direction)
+function production_handler.handle_machine_change(player, line_id, machine_id, click, direction, alt)
     if ui_util.check_archive_status(player) then return end
 
     local ui_state = get_ui_state(player)
     local subfactory = ui_state.context.subfactory
     local floor = ui_state.context.floor
     local line = Floor.get(floor, "Line", line_id)
-    
+    local relevant_line = (line.subfloor == nil) and line or Floor.get(line.subfloor, "Line", 1)
+    local recipe_proto = relevant_line.recipe.proto
+
     -- machine_id being nil means the user wants to change the machine of this (assembly) line
     if machine_id == nil then
         -- Change the machine to be one tier lower/higher if possible
         if direction ~= nil then
-            data_util.machine.change(player, line, nil, direction)
+            Line.change_machine(line, player, nil, direction)
+            calculation.update(player, subfactory, true)
+
+        -- Reset this machine to its default if ALT was pressed
+        elseif alt then
+            Line.change_machine(line, player, nil, nil)
+            line.machine.limit = nil
+            line.machine.hard_limit = false
             calculation.update(player, subfactory, true)
 
         -- Display all the options for this machine category
-        elseif click == "left" then            
-            -- Changing machines only makes sense if there are more than one in it's category
-            if #line.machine.category.machines > 1 then
-                if #line.machine.category.machines < 5 then  -- up to 4 machines, no picker is needed
-                    ui_state.current_activity = "changing_machine"
-                    ui_state.context.line = line  -- won't be reset after use, but that doesn't matter
-                    refresh_current_activity(player)
+        elseif click == "left" then
+            local current_machine_proto = line.machine.proto
+            local applicable_prototypes = {}
 
-                else  -- Open a chooser dialog presenting all machine choices
-                    local modal_data = {
-                        reciever_name = "machine",
-                        title = {"fp.machine"},
-                        text = {"", {"fp.chooser_machine"}, " '", line.recipe.proto.localised_name, "':"},
-                        object = line.machine
-                    }
-                    
-                    ui_state.context.line = line  -- won't be reset after use, but that doesn't matter
-                    enter_modal_dialog(player, {type="chooser", modal_data=modal_data})
+            local machine_category_id = global.all_machines.map[current_machine_proto.category]
+            local category_prototypes = global.all_machines.categories[machine_category_id].machines
+
+            -- Determine if there is more than one machine that applies to this machine
+            for _, machine_proto in ipairs(category_prototypes) do
+                if Line.is_machine_applicable(line, machine_proto) then
+                    table.insert(applicable_prototypes, machine_proto)
                 end
             end
-        
+
+            -- Changing machines only makes sense if there are more than one in its category
+            if #applicable_prototypes > 1 then  -- Open a chooser dialog presenting all machine choices
+                local modal_data = {
+                    title = {"fp.pl_machine", 1},
+                    text = {"fp.chooser_machine", recipe_proto.localised_name},
+                    click_handler = production_handler.apply_machine_choice,
+                    button_definitions = compile_machine_chooser_buttons(player, line, applicable_prototypes),
+                    object = line.machine,
+                }
+
+                modal_dialog.enter(player, {type="chooser", modal_data=modal_data})
+            end
+
         -- Open the dialog to set a machine count limit
         elseif click == "right" then
             local modal_data = {
-                reciever_name = "machine",
-                title = {"fp.machine_limit_title"},
-                text = {"", {"fp.machine_limit_text"}, " '", line.recipe.proto.localised_name, "':"},
+                title = {"fp.options_machine_title"},
+                text = {"fp.options_machine_text", line.machine.proto.localised_name},
+                submission_handler = production_handler.apply_machine_options,
                 object = line.machine,
                 fields = {
                     {
-                        type = "numeric",
+                        type = "numeric_textfield",
                         name = "machine_limit",
-                        caption = {"fp.machine_limit_option"},
-                        tooltip = {"fp.machine_limit_option_tt"},
-                        value = line.machine.limit or "",
+                        change_handler = production_handler.machine_limit_change,
+                        caption = {"fp.options_machine_limit"},
+                        tooltip = {"fp.options_machine_limit_tt"},
+                        text = line.machine.limit or "",
                         focus = true
                     },
                     {
                         type = "on_off_switch",
                         name = "hard_limit",
-                        caption = {"fp.machine_hard_limit_option"},
-                        tooltip = {"fp.machine_hard_limit_option_tt"},
-                        value = line.machine.hard_limit or false
+                        caption = {"fp.options_machine_hard_limit"},
+                        tooltip = {"fp.options_machine_hard_limit_tt"},
+                        state = line.machine.hard_limit or false
                     }
                 }
             }
 
-            ui_state.context.line = line  -- won't be reset after use, but that doesn't matter
-            enter_modal_dialog(player, {type="options", submit=true, modal_data=modal_data})
-        end
-    else
-        -- Accept the user selection of new machine for this (assembly) line
-        if click == "left" then
-            local category_id = line.machine.category.id
-
-            if direction == "positive" then
-                -- Set preferred machine if button is shift-clicked
-                data_util.machine.set_default(player, category_id, machine_id)
-            end
-
-            local new_machine = global.all_machines.categories[category_id].machines[machine_id]
-            data_util.machine.change(player, line, new_machine, nil)
-            ui_state.current_activity = nil
-            calculation.update(player, subfactory, true)
+            modal_dialog.enter(player, {type="options", submit=true, modal_data=modal_data})
         end
     end
 end
 
--- Generates the buttons for the machine chooser dialog
-function generate_chooser_machine_buttons(player)
-    local ui_state = get_ui_state(player)
-    local line = ui_state.context.line
-
-    for machine_id, machine in ipairs(line.machine.category.machines) do
-        if data_util.machine.is_applicable(machine, line.recipe) then
-            local button = generate_blank_chooser_button(player, machine_id)
-            -- The actual button is setup by the method shared by non-chooser machine buttons
-            setup_machine_choice_button(player, button, machine, ui_state.modal_data.object.proto.id, 36)
-        end
-    end
-end
 
 -- Recieves the result of the machine choice and applies it
-function apply_machine_choice(player, machine_id, modifier_keys)
-    local context = get_context(player)
-    local category_id, machine_id = context.line.machine.category.id, tonumber(machine_id)
+function production_handler.apply_machine_choice(player, machine_id)
+    local ui_state = data_util.get("ui_state", player)
+    local machine = ui_state.modal_data.object
 
-    if modifier_keys.shift then
-        -- Set preferred machine if button is shift-clicked
-        data_util.machine.set_default(player, category_id, machine_id)
-    end
+    local machine_category_id = global.all_machines.map[machine.proto.category]
+    local machine_proto = global.all_machines.categories[machine_category_id].machines[tonumber(machine_id)]
 
-    local machine = global.all_machines.categories[category_id].machines[machine_id]
-    data_util.machine.change(player, context.line, machine, nil)
-    calculation.update(player, context.subfactory, true)
+    Line.change_machine(machine.parent, player, machine_proto, nil)
+    calculation.update(player, ui_state.context.subfactory, true)
+end
+
+-- Sets the state of the hard limit switch according to what the entered limit is
+function production_handler.machine_limit_change(modal_data, textfield)
+    local switch = modal_data.ui_elements["fp_switch_on_off_options_hard_limit"]
+    local machine_limit = tonumber(textfield.text)
+    if machine_limit == nil then switch.switch_state = "right" end
+    switch.enabled = (machine_limit ~= nil)
 end
 
 -- Recieves the result of the machine limit options and applies it
-function apply_machine_options(player, machine, options)
-    local context = get_context(player)
-    -- tonumber() has already converted an empty string to nil
-    if options.machine_limit == nil then options.hard_limit = false end
-    Line.set_machine_limit(context.line, options.machine_limit, options.hard_limit)
-    calculation.update(player, context.subfactory, true)
+function production_handler.apply_machine_options(player, options, action)
+    if action == "submit" then
+        local ui_state = data_util.get("ui_state", player)
+        local machine = ui_state.modal_data.object
+
+        if options.machine_limit == nil then options.hard_limit = false end
+        machine.limit, machine.hard_limit = options.machine_limit, options.hard_limit
+
+        calculation.update(player, ui_state.context.subfactory, true)
+    end
 end
 
 
 -- Handles a click on an existing module or on the add-module-button
-function handle_line_module_click(player, line_id, module_id, click, direction, action, alt)
+function production_handler.handle_line_module_click(player, line_id, module_id, click, direction, action, alt)
     if ui_util.check_archive_status(player) then return end
 
     local ui_state = get_ui_state(player)
     local floor = ui_state.context.floor
     local line = Floor.get(floor, "Line", line_id)
-    ui_state.context.line = line
-    local limit = Line.empty_slots(line)
 
     if module_id == nil then  -- meaning the add-module-button was pressed
-        enter_modal_dialog(player, {type="module", submit=true, modal_data={selected_object=nil, empty_slots=limit}})
+        modal_dialog.enter(player, {type="module", submit=true, modal_data={object=nil, machine=line.machine}})
 
     else  -- meaning an existing module was clicked
-        local module = Line.get(line, "Module", module_id)
+        local module = Machine.get(line.machine, "Module", module_id)
 
         if direction ~= nil then  -- change the module to a higher/lower amount/tier
-            local tier_map = module_tier_map
+            local tier_map = MODULE_TIER_MAP
 
             -- Changes the current module tier by the given factor (+1 or -1 in this case)
             local function handle_tier_change(factor)
-                local new_proto = tier_map[module.category.id][module.proto.tier + factor]
-                -- (TODO add error messages to this sometime)
+                local module_category_id = global.all_modules.map[module.proto.category]
+                local new_proto = tier_map[module_category_id][module.proto.tier + factor]
                 if new_proto ~= nil then
                     local new_module = Module.init_by_proto(new_proto, tonumber(module.amount))
-                    Line.replace(line, module, new_module)
+                    Machine.replace(line.machine, module, new_module)
+                else
+                    local change_direction = (factor == 1) and {"fp.upgraded"} or {"fp.downgraded"}
+                    local message = {"fp.error_object_cant_be_up_downgraded", {"fp.module"}, change_direction}
+                    titlebar.enqueue_message(player, message, "error", 1)
                 end
             end
 
             -- alt modifies the module amount, no alt modifies the module tier
             if direction == "positive" then
                 if alt then
+                    local limit = Machine.empty_slot_count(line.machine)
                     local new_amount = math.min(module.amount + 1, module.amount + limit)
-                    Line.change_module_amount(line, module, new_amount)
+                    if new_amount == module.amount then
+                        local message = {"fp.error_object_amount_cant_be_in_decreased", {"fp.module"}, {"fp.increased"}}
+                        titlebar.enqueue_message(player, message, "error", 1)
+                    else
+                        Module.change_amount(module, new_amount)
+                    end
                 else
                     handle_tier_change(1)
                 end
@@ -255,10 +322,10 @@ function handle_line_module_click(player, line_id, module_id, click, direction, 
             else  -- direction == "negative"
                 if alt then
                     local new_amount = module.amount - 1
-                    if new_amount == 0 then 
-                        Line.remove(line, module)
+                    if new_amount == 0 then  -- no error message possible here
+                        Machine.remove(line.machine, module)
                     else
-                        Line.change_module_amount(line, module, new_amount)
+                        Module.change_amount(module, new_amount)
                     end
                 else
                     handle_tier_change(-1)
@@ -268,41 +335,44 @@ function handle_line_module_click(player, line_id, module_id, click, direction, 
             calculation.update(player, ui_state.context.subfactory, true)
 
         elseif action == "delete" then
-            Line.remove(line, module)
+            Machine.remove(line.machine, module)
             calculation.update(player, ui_state.context.subfactory, true)
 
         elseif action == "edit" or click == "left" then
-            enter_modal_dialog(player, {type="module", submit=true, delete=true, modal_data={selected_object=module,
-              empty_slots=(limit + module.amount), selected_module=module.proto}})
+            modal_dialog.enter(player, {type="module", submit=true, delete=true,
+              modal_data={object=module, machine=line.machine}})
         end
     end
 end
 
+
 -- Handles a click on an existing beacon/beacon-module or on the add-beacon-button
-function handle_line_beacon_click(player, line_id, type, click, direction, action, alt)
+function production_handler.handle_line_beacon_click(player, line_id, type, click, direction, action, alt)
     if ui_util.check_archive_status(player) then return end
 
     local ui_state = get_ui_state(player)
     local floor = ui_state.context.floor
     local line = Floor.get(floor, "Line", line_id)
-    ui_state.context.line = line
 
     if type == nil then  -- meaning the add-beacon-button was pressed
-        local limit = get_preferences(player).preferred_beacon.module_limit
-        enter_modal_dialog(player, {type="beacon", submit=true, modal_data={selected_object=nil, empty_slots=limit}})
+        modal_dialog.enter(player, {type="beacon", submit=true, modal_data={object=nil, line=line}})
 
     elseif direction ~= nil then  -- check direction here, because click doesn't matter if there is no direction
         if type == "module" then
             local module = line.beacon.module
-            local tier_map = module_tier_map
+            local tier_map = MODULE_TIER_MAP
 
             -- Changes the current module tier by the given factor (+1 or -1 in this case)
             local function handle_tier_change(factor)
-                local new_proto = tier_map[module.category.id][module.proto.tier + factor]
-                -- (TODO add error messages to this sometime)
+                local module_category_id = global.all_modules.map[module.proto.category]
+                local new_proto = tier_map[module_category_id][module.proto.tier + factor]
                 if new_proto ~= nil then
                     local new_module = Module.init_by_proto(new_proto, tonumber(module.amount))
                     Beacon.set_module(line.beacon, new_module)
+                else
+                    local change_direction = (factor == 1) and {"fp.upgraded"} or {"fp.downgraded"}
+                    local message = {"fp.error_object_cant_be_up_downgraded", {"fp.module"}, change_direction}
+                    titlebar.enqueue_message(player, message, "error", 1)
                 end
             end
 
@@ -310,8 +380,13 @@ function handle_line_beacon_click(player, line_id, type, click, direction, actio
             if direction == "positive" then
                 if alt then
                     local new_amount = math.min(module.amount + 1, line.beacon.proto.module_limit)
-                    local new_module = Module.init_by_proto(module.proto, tonumber(new_amount))
-                    Beacon.set_module(line.beacon, new_module)
+                    if new_amount == module.amount then
+                        local message = {"fp.error_object_amount_cant_be_in_decreased", {"fp.module"}, {"fp.increased"}}
+                        titlebar.enqueue_message(player, message, "error", 1)
+                    else
+                        local new_module = Module.init_by_proto(module.proto, tonumber(new_amount))
+                        Beacon.set_module(line.beacon, new_module)
+                    end
                 else
                     handle_tier_change(1)
                 end
@@ -319,8 +394,8 @@ function handle_line_beacon_click(player, line_id, type, click, direction, actio
             else  -- direction == "negative"
                 if alt then
                     local new_amount = module.amount - 1
-                    if new_amount == 0 then 
-                        Line.remove_beacon(line)
+                    if new_amount == 0 then  -- no error message possible here
+                        Line.set_beacon(line, nil)
                     else
                         local new_module = Module.init_by_proto(module.proto, tonumber(new_amount))
                         Beacon.set_module(line.beacon, new_module)
@@ -332,40 +407,42 @@ function handle_line_beacon_click(player, line_id, type, click, direction, actio
 
         else  -- type == "beacon"
             local beacon = line.beacon
-            -- (TODO add error messages to this sometime)
+
+            local function handle_tier_change(factor)
+                local new_proto = global.all_beacons.beacons[beacon.proto.id + factor]
+                if new_proto ~= nil then
+                    local new_beacon = Beacon.init_by_protos(new_proto, beacon.amount, beacon.module.proto,
+                      beacon.module.amount, beacon.total_amount)
+                    Line.set_beacon(line, new_beacon)
+                else
+                    local change_direction = (factor == 1) and {"fp.upgraded"} or {"fp.downgraded"}
+                    local message = {"fp.error_object_cant_be_up_downgraded", {"fp.beacon"}, change_direction}
+                    titlebar.enqueue_message(player, message, "error", 1)
+                end
+            end
 
             -- alt modifies the beacon amount, no alt modifies the beacon tier
             if direction == "positive" then
-                if alt then
+                if alt then -- no error message possible here
                     local new_beacon = Beacon.init_by_protos(beacon.proto, beacon.amount + 1, beacon.module.proto,
                       beacon.module.amount, beacon.total_amount)
                     Line.set_beacon(line, new_beacon)
                 else
-                    local new_proto = global.all_beacons.beacons[beacon.proto.id + 1]
-                    if new_proto ~= nil then
-                        local new_beacon = Beacon.init_by_protos(new_proto, beacon.amount, beacon.module.proto,
-                          beacon.module.amount, beacon.total_amount)
-                        Line.set_beacon(line, new_beacon)
-                    end
+                    handle_tier_change(1)
                 end
 
             else  -- direction == "negative"
                 if alt then
                     local new_amount = beacon.amount - 1
-                    if new_amount == 0 then 
-                        Line.remove_beacon(line)
+                    if new_amount == 0 then  -- no error message possible here
+                        Line.set_beacon(line, nil)
                     else
                         local new_beacon = Beacon.init_by_protos(beacon.proto, new_amount, beacon.module.proto,
-                      beacon.module.amount, beacon.total_amount)
-                    Line.set_beacon(line, new_beacon)
-                    end
-                else
-                    local new_proto = global.all_beacons.beacons[beacon.proto.id - 1]
-                    if new_proto ~= nil then
-                        local new_beacon = Beacon.init_by_protos(new_proto, beacon.amount, beacon.module.proto,
                           beacon.module.amount, beacon.total_amount)
                         Line.set_beacon(line, new_beacon)
                     end
+                else
+                    handle_tier_change(-1)
                 end
             end
         end
@@ -373,161 +450,166 @@ function handle_line_beacon_click(player, line_id, type, click, direction, actio
         calculation.update(player, ui_state.context.subfactory, true)
 
     elseif action == "delete" then
-        Line.remove_beacon(line)
+        Line.set_beacon(line, nil)
         calculation.update(player, ui_state.context.subfactory, true)
 
     elseif action == "edit" or click == "left" then
-        local beacon = line.beacon
-        enter_modal_dialog(player, {type="beacon", submit=true, delete=true, modal_data={selected_object=beacon,
-          empty_slots=beacon.proto.module_limit, selected_beacon=beacon.proto, selected_module=beacon.module.proto}})
+        modal_dialog.enter(player, {type="beacon", submit=true, delete=true,
+          modal_data={object=line.beacon, line=line}})
     end
 end
 
 
 -- Handles a click on any of the 3 item buttons of a specific line
-function handle_item_button_click(player, line_id, class, item_id, click, direction, alt)
+function production_handler.handle_item_button_click(player, line_id, class, item_id, click, direction, alt)
     if ui_util.check_archive_status(player) then return end
 
-    local ui_state = get_ui_state(player)
-    local line = Floor.get(ui_state.context.floor, "Line", line_id)
+    local context = get_context(player)
+    local line = Floor.get(context.floor, "Line", line_id)
     local item = Line.get(line, class, item_id)
 
     if alt then
         ui_util.execute_alt_action(player, "show_item", {item=item.proto, click=click})
 
-    elseif direction ~= nil then  -- Shift item in the given direction
-        if Line.shift(line, item, direction) then
-            refresh_production_table(player)
-        else
-            local lower_class = string.lower(class)
-            local direction_string = (direction == "negative") and {"fp.left"} or {"fp.right"}
-            local message = {"fp.error_list_item_cant_be_shifted", {"fp.l" .. lower_class}, direction_string}
-            ui_util.message.enqueue(player, message, "error", 1, false)
-        end
+    elseif click == "left" and item.proto.type ~= "entity" then
+        if item.class == "Ingredient" then  -- Pick recipe to produce this ingredient
+            modal_dialog.enter(player, {type="recipe", modal_data={product=item, production_type="produce",
+              add_after_position=((direction == "positive") and line.gui_position or nil)}})
 
-        refresh_current_activity(player)
-        
-    else
-        if click == "right" and item.class == "Fuel" then
-            local modal_data = {
-                reciever_name = "fuel",
-                title = {"fp.fuel"},
-                object = item
-            }
-
-            -- Set different message depending on whether this fuel is on a line with a subfloor or not
-            if line.subfloor == nil then
-                modal_data.text = {"", {"fp.chooser_fuel_line"}, " '", line.machine.proto.localised_name, "':"}
+        elseif item.class == "Product" then -- Set the priority product
+            if line.Product.count < 2 then
+                titlebar.enqueue_message(player, {"fp.error_no_prioritizing_single_product"}, "error", 1, true)
             else
-                modal_data.text = {"", {"fp.chooser_fuel_floor"}, " '", item.proto.localised_name, "':"}
+                -- Remove the priority_product if the already selected one is clicked
+                local priority_proto = (line.priority_product_proto ~= item.proto) and item.proto or nil
+                -- The priority_product is always stored on the first line of the subfloor, if there is one
+                local relevant_line = (line.subfloor == nil) and line or Floor.get(line.subfloor, "Line", 1)
+                relevant_line.priority_product_proto = priority_proto
+
+                calculation.update(player, context.subfactory, true)
             end
 
-            ui_state.context.line = line  -- won't be reset after use, but that doesn't matter
-            enter_modal_dialog(player, {type="chooser", modal_data=modal_data})
-
-        -- Pick recipe to produce said ingredient
-        elseif click == "left" and item.proto.type ~= "entity" then
-            if item.class == "Ingredient" or item.class == "Fuel" then
-                enter_modal_dialog(player, {type="recipe", modal_data={product=item, production_type="produce"}})
-
-            elseif item.class == "Product" then
-                if line.Product.count < 2 then
-                    ui_util.message.enqueue(player, {"fp.error_no_prioritizing_single_product"}, "error", 1, true)
-                else
-                    local priority_product_proto = (line.priority_product_proto ~= item.proto) and item.proto or nil
-                    Line.set_priority_product(line, priority_product_proto)
-                    calculation.update(player, ui_state.context.subfactory, true)
-                end
-
-            elseif item.class == "Byproduct" then
-                -- Byproduct recipes can only be added when the matrix solver is active
-                if get_settings(player).prefer_matrix_solver then
-                    enter_modal_dialog(player, {type="recipe", modal_data={product=item, production_type="consume"}})
-                end
-            end
+        --[[ elseif item.class == "Byproduct" then
+            modal_dialog.enter(player, {type="recipe", modal_data={product=item, production_type="consume"}}) ]]
         end
+
+    elseif click == "right" then  -- Open the percentage dialog for this item
+        local type_localised_string = {"fp.pl_" .. string.lower(item.class), 1}
+        local produce_consume = (item.class == "Ingredient") and {"fp.consume"} or {"fp.produce"}
+
+        local modal_data = {
+            title = {"fp.options_item_title", type_localised_string},
+            text = {"fp.options_item_text", item.proto.localised_name},
+            submission_handler = production_handler.apply_item_options,
+            object = item,
+            fields = {
+                {
+                    type = "numeric_textfield",
+                    name = "item_amount",
+                    caption = {"fp.options_item_amount"},
+                    tooltip = {"fp.options_item_amount_tt", type_localised_string, produce_consume},
+                    text = item.amount,
+                    width = 140,
+                    focus = true
+                }
+            }
+        }
+
+        modal_dialog.enter(player, {type="options", submit=true, modal_data=modal_data})
     end
 end
 
--- Generates the buttons for the fuel chooser dialog
-function generate_chooser_fuel_buttons(player)
-    local player_table = get_table(player)
-    local ui_state = get_ui_state(player)
-    local view_name = ui_state.view_state.selected_view.name
-    local line = ui_state.context.line
+-- Recieves the result of the item options and applies it
+function production_handler.apply_item_options(player, options, action)
+    if action == "submit" then
+        local ui_state = data_util.get("ui_state", player)
+        local item = ui_state.modal_data.object
+        local current_amount = item.amount
 
-    local old_fuel_id = global.all_fuels.map[ui_state.modal_data.object.proto.name]
-    local machine = line.machine
-    for new_fuel_id, fuel_proto in pairs(global.all_fuels.fuels) do
-        local selected = (old_fuel_id == new_fuel_id) and {"", " (", {"fp.selected"}, ")"} or ""
-        local tooltip = {"", fuel_proto.localised_name, selected}
+        local line = item.parent
+        local relevant_line = (line.subfloor == nil) and line or Floor.get(line.subfloor, "Line", 1)
 
-        local fuel_amount = nil
-        -- Only add number information if this line has no subfloor (really difficult calculations otherwise)
-        if line.subfloor == nil then
-            local energy_consumption = calculation.util.determine_energy_consumption(machine.proto, machine.count,
-              line.total_effects)  -- don't care about mining productivity in this case, only the consumption-effect
-            fuel_amount = calculation.util.determine_fuel_amount(energy_consumption, machine.proto.burner,
-              fuel_proto.fuel_value, ui_state.context.subfactory.timescale)
-
-            fuel_amount, appendage = ui_util.determine_item_amount_and_appendage(player_table, view_name,
-              fuel_proto.type, fuel_amount, line.machine.count)
-            tooltip = {"", tooltip, "\n" .. ui_util.format_number(fuel_amount, 4) .. " ", appendage}
+        if item.class ~= "Ingredient" then  -- For products and byproducts, find if the item exists in the other space
+            local other_class = (item.class == "Product") and "Byproduct" or "Product"
+            local opposing_item = Line.get_by_type_and_name(relevant_line, other_class,
+              item.proto.type, item.proto.name)
+            if opposing_item ~= nil then current_amount = current_amount + opposing_item.amount end
         end
-        tooltip = {"", tooltip, "\n", ui_util.attributes.fuel(fuel_proto)}
 
-        local button = generate_blank_chooser_button(player, new_fuel_id)
-        if old_fuel_id == new_fuel_id then button.style = "fp_button_icon_large_green" end
-        button.sprite = fuel_proto.sprite
-        button.number = fuel_amount
-        button.tooltip = tooltip
+        options.item_amount = options.item_amount or 0
+        relevant_line.percentage = (relevant_line.percentage * options.item_amount) / current_amount
+
+        calculation.update(player, ui_state.context.subfactory, true)
+    end
+end
+
+
+-- Handles a click on an line fuel button
+function production_handler.handle_fuel_button_click(player, line_id, click, direction, alt)
+    if ui_util.check_archive_status(player) then return end
+
+    local context = get_context(player)
+    local line = Floor.get(context.floor, "Line", line_id)
+    local fuel = line.machine.fuel  -- must exist to be able to get here
+
+    if alt then
+        ui_util.execute_alt_action(player, "show_item", {item=fuel.proto, click=click})
+
+    else
+        if click == "left" then
+            modal_dialog.enter(player, {type="recipe", modal_data={product=fuel, production_type="produce",
+              add_after_position=((direction == "positive") and line.gui_position or nil)}})
+
+        elseif click == "right" then
+            local machine_proto = line.machine.proto
+            local applicable_prototypes = {}
+
+            -- Applicable fuels come from all categories that this burner supports
+            for category_name, _ in pairs(machine_proto.burner.categories) do
+                local category_id = global.all_fuels.map[category_name]
+                if category_id ~= nil then
+                    for _, fuel_proto in pairs(global.all_fuels.categories[category_id].fuels) do
+                        table.insert(applicable_prototypes, fuel_proto)
+                    end
+                end
+            end
+
+            local modal_data = {
+                title = {"fp.pl_fuel", 1},
+                text = {"fp.chooser_fuel", machine_proto.localised_name},
+                click_handler = production_handler.apply_fuel_choice,
+                button_definitions = compile_fuel_chooser_buttons(player, line, applicable_prototypes),
+                object = fuel,
+            }
+
+            modal_dialog.enter(player, {type="chooser", modal_data=modal_data})
+        end
     end
 end
 
 -- Recieves the result of a chooser user choice and applies it
-function apply_fuel_choice(player, new_fuel_id)
-    local context = get_context(player)
-    local line = context.line
+function production_handler.apply_fuel_choice(player, new_fuel_id_string)
+    local ui_state = data_util.get("ui_state", player)
 
-    local old_fuel = get_ui_state(player).modal_data.object.proto
-    local new_fuel = global.all_fuels.fuels[tonumber(new_fuel_id)]
-    
-    -- Sets the new fuel to all relevant lines on the given floor and all it's subfloors
-    local function apply_fuel_to_floor(floor)
-        for _, line in ipairs(Floor.get_in_order(floor, "Line")) do
-            if line.subfloor == nil then
-                local current_fuel = Line.get_by_name(line, "Fuel", old_fuel.name)
-                if current_fuel ~= nil then current_fuel.proto = new_fuel end
-            else
-                apply_fuel_to_floor(line.subfloor)
-            end
-        end
-    end
-    
-    if line.subfloor == nil then  -- subfloor-less lines are always limited to 1 fuel type
-        Line.get_by_gui_position(line, "Fuel", 1).proto = new_fuel
-        if line.id == 1 and line.parent and line.parent.level > 1 then
-            Line.get_by_gui_position(line.parent.origin_line, "Fuel", 1).proto = new_fuel
-        end
-    else
-        apply_fuel_to_floor(line.subfloor)
-    end
+    local split_string = split_string(new_fuel_id_string, "_")
+    local new_fuel_proto = global.all_fuels.categories[split_string[1]].fuels[split_string[2]]
 
-    calculation.update(player, context.subfactory, true)
+    ui_state.modal_data.object.proto = new_fuel_proto
+    calculation.update(player, ui_state.context.subfactory, true)
 end
 
 
 -- Handles the changing of the comment textfield
-function handle_comment_change(player, element)
+function production_handler.handle_comment_change(player, element)
     local line = Floor.get(get_context(player).floor, "Line", tonumber(string.match(element.name, "%d+")))
     line.comment = element.text
 end
 
 -- Clears all comments on the current floor
-function clear_recipe_comments(player)
+function production_handler.clear_recipe_comments(player)
     local floor = get_context(player).floor
     for _, line in ipairs(Floor.get_in_order(floor, "Line")) do
         line.comment = nil
     end
-    refresh_production_pane(player)
+    production_titlebar.refresh(player)
 end

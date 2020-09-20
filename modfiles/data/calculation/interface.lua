@@ -7,6 +7,121 @@ calculation = {
     util = {}
 }
 
+
+-- ** LOCAL UTIL **
+-- Generates structured data of the given floor for calculation
+local function generate_floor_data(player, subfactory, floor)
+    local floor_data = {
+        id = floor.id,
+        lines = {}
+    }
+
+    local mining_productivity = (subfactory.mining_productivity ~= nil) and
+      (subfactory.mining_productivity / 100) or player.force.mining_drill_productivity_bonus
+
+    for _, line in ipairs(Floor.get_in_order(floor, "Line")) do
+        local line_data = { id = line.id }
+
+        if line.subfloor ~= nil then  -- lines with subfloor need no further data than a reference to that subfloor
+            line_data.recipe_proto = Floor.get(line.subfloor, "Line", 1).recipe.proto
+            line_data.subfloor = generate_floor_data(player, subfactory, line.subfloor)
+
+        else
+            line_data.recipe_proto = line.recipe.proto  -- reference
+            line_data.timescale = subfactory.timescale
+            line_data.percentage = line.percentage
+            line_data.production_type = line.recipe.production_type
+            line_data.machine_limit = {limit=line.machine.limit, hard_limit=line.machine.hard_limit}
+            line_data.beacon_consumption = 0
+            line_data.priority_product_proto = line.priority_product_proto  -- reference
+            line_data.machine_proto = line.machine.proto  -- reference
+
+            -- Fuel prototype
+            if line.machine.fuel ~= nil then line_data.fuel_proto = line.machine.fuel.proto end
+
+            -- Total effects
+            if line.machine.proto.mining then
+                -- If there is mining prod, a copy of the table is required
+                local effects = table.shallow_copy(line.total_effects)
+                effects.productivity = effects.productivity + mining_productivity
+                line_data.total_effects = effects
+            else
+                -- If there's no mining prod, a reference will suffice
+                line_data.total_effects = line.total_effects
+            end
+
+            -- Beacon total (can be calculated here, which is faster and simpler)
+            if line.beacon ~= nil and line.beacon.total_amount ~= nil then
+                line_data.beacon_consumption = line.beacon.proto.energy_usage * line.beacon.total_amount * 60
+            end
+        end
+
+        table.insert(floor_data.lines, line_data)
+    end
+
+    return floor_data
+end
+
+-- Replaces the items of the given object (of given class) using the given result
+local function update_object_items(object, item_class, item_results)
+    local object_class = _G[object.class]
+    object_class.clear(object, item_class)
+
+    for _, item_result in pairs(structures.class.to_array(item_results)) do
+        local required_amount = (object.class == "Subfactory") and 0 or nil
+        local item = Item.init_by_item(item_result, item_class, item_result.amount, required_amount)
+        object_class.add(object, item)
+    end
+end
+
+-- Goes through every line and setting their satisfied_amounts appropriately
+local function update_ingredient_satisfaction(floor, product_class)
+    product_class = product_class or structures.class.init()
+
+    local function deteremine_satisfaction(ingredient)
+        local product_amount = product_class[ingredient.proto.type][ingredient.proto.name]
+
+        if product_amount ~= nil then
+            if product_amount >= ingredient.amount then
+                ingredient.satisfied_amount = ingredient.amount
+                structures.class.subtract(product_class, ingredient)
+
+            else  -- product_amount < ingredient.amount
+                ingredient.satisfied_amount = product_amount
+                structures.class.subtract(product_class, ingredient, product_amount)
+            end
+        else
+            ingredient.satisfied_amount = 0
+        end
+    end
+
+    -- Iterate the lines from top to bottom, setting satisfaction amounts along the way
+    for _, line in ipairs(Floor.get_in_order(floor, "Line", true)) do
+        if line.subfloor ~= nil then
+            local subfloor_product_class = structures.class.copy(product_class)
+            update_ingredient_satisfaction(line.subfloor, subfloor_product_class)
+
+        elseif line.machine.fuel then
+            deteremine_satisfaction(line.machine.fuel)
+        end
+
+        for _, ingredient in pairs(Line.get_in_order(line, "Ingredient")) do
+            if ingredient.proto.type ~= "entity" then
+                deteremine_satisfaction(ingredient)
+            end
+        end
+
+        -- Products and byproducts just get added to the list as being produced
+        for _, class_name in pairs{"Product", "Byproduct"} do
+            for _, product in pairs(Line.get_in_order(line, class_name)) do
+                structures.class.add(product_class, product)
+            end
+        end
+    end
+end
+
+
+-- ** TOP LEVEL **
 -- Updates the whole subfactory calculations from top to bottom
 function calculation.update(player, subfactory, refresh)
     if get_settings(player).prefer_matrix_solver then
@@ -18,15 +133,21 @@ end
 
 function calculation.start_line_by_line_solver(player, subfactory, refresh)
     if subfactory ~= nil and subfactory.valid then
-        local player_table = get_table(player)
+        local player_table = data_util.get("table", player)
         -- Save the active subfactory in global so the model doesn't have to pass it around
         player_table.active_subfactory = subfactory
-        
+
         local subfactory_data = calculation.interface.get_subfactory_data(player, subfactory)
         model.update_subfactory(subfactory_data)
         player_table.active_subfactory = nil
     end
+
     if refresh then refresh_main_dialog(player) end
+end
+
+-- Updates the given subfactory's ingredient satisfactions
+function calculation.determine_ingredient_satisfaction(subfactory)
+    update_ingredient_satisfaction(Subfactory.get(subfactory, "Floor", 1), nil)
 end
 
 function calculation.start_matrix_solver(player, subfactory, refresh, show_dialog)
@@ -64,24 +185,25 @@ function calculation.run_matrix_solver(player, subfactory, matrix_free_items, re
     if refresh then refresh_main_dialog(player) end
 end
 
+-- ** INTERFACE **
 -- Returns a table containing all the data needed to run the calculations for the given subfactory
 function calculation.interface.get_subfactory_data(player, subfactory)
     local subfactory_data = {
         player_index = player.index,
         top_level_products = {},
-        top_floor = {}
+        top_floor = nil
     }
 
     for _, product in ipairs(Subfactory.get_in_order(subfactory, "Product")) do
         local product_data = {
             proto = product.proto,  -- reference
-            required_amount = product.required_amount
+            amount = Item.required_amount(product)
         }
         table.insert(subfactory_data.top_level_products, product_data)
     end
 
     local top_floor = Subfactory.get(subfactory, "Floor", 1)
-    subfactory_data.top_floor = calculation.util.generate_floor_data(player, subfactory, top_floor)
+    subfactory_data.top_floor = generate_floor_data(player, subfactory, top_floor)
 
     if subfactory.matrix_free_items ~= nil then
         subfactory_data.matrix_free_items = subfactory.matrix_free_items
@@ -102,22 +224,18 @@ function calculation.interface.set_subfactory_result(result)
     subfactory.energy_consumption = result.energy_consumption
     subfactory.pollution = result.pollution
 
-    -- For products, the existing top-level items just get updated individually
-    -- When the products are not present in the result, it means they have been produced
+    -- If products are not present in the result, it means they have been produced
     for _, product in pairs(Subfactory.get_in_order(subfactory, "Product")) do
         local product_result_amount = result.Product[product.proto.type][product.proto.name] or 0
-        product.amount = product.required_amount - product_result_amount
+        product.amount = Item.required_amount(product) - product_result_amount
     end
-    
-    calculation.util.update_items(subfactory, result, "Byproduct")
-    calculation.util.update_items(subfactory, result, "Ingredient")
+
+    update_object_items(subfactory, "Ingredient", result.Ingredient)
+    update_object_items(subfactory, "Byproduct", result.Byproduct)
 
     -- Determine satisfaction-amounts for all line ingredients
     if player_table.preferences.ingredient_satisfaction then
-        local top_floor = Subfactory.get(subfactory, "Floor", 1)
-        local aggregate = structures.aggregate.init()  -- gets modified by the two functions
-        calculation.util.determine_net_ingredients(top_floor, aggregate)
-        calculation.util.update_ingredient_satisfaction(top_floor, aggregate)
+        calculation.determine_ingredient_satisfaction(subfactory)
     end
 end
 
@@ -126,226 +244,84 @@ function calculation.interface.set_line_result(result)
     local subfactory = global.players[result.player_index].active_subfactory
     local floor = Subfactory.get(subfactory, "Floor", result.floor_id)
     local line = Floor.get(floor, "Line", result.line_id)
-    
-    line.machine.count = result.machine_count
+
+    if line.subfloor ~= nil then
+        line.machine = {count = result.machine_count}
+    else
+        line.machine.count = result.machine_count
+        if line.machine.fuel ~= nil then line.machine.fuel.amount = result.fuel_amount end
+
+        line.production_ratio = result.production_ratio
+        line.uncapped_production_ratio = result.uncapped_production_ratio
+
+        -- Reset the priority_product if there's <2 products
+        if structures.class.count(result.Product) < 2 then line.priority_product_proto = nil end
+    end
+
     line.energy_consumption = result.energy_consumption
     line.pollution = result.pollution
-    line.production_ratio = result.production_ratio
-    line.uncapped_production_ratio = result.uncapped_production_ratio
 
-    -- Reset the priority_product if there's <2 products
-    if structures.class.count(result.Product) < 2 then
-        Line.set_priority_product(line, nil)
-    end
-
-    calculation.util.update_items(line, result, "Product")
-    calculation.util.update_items(line, result, "Byproduct")
-    calculation.util.update_items(line, result, "Ingredient")
-    calculation.util.update_items(line, result, "Fuel")
+    update_object_items(line, "Product", result.Product)
+    update_object_items(line, "Byproduct", result.Byproduct)
+    update_object_items(line, "Ingredient", result.Ingredient)
 end
 
 
--- **** LOCAL UTIL ****
--- Generates structured data of the given floor for calculation
-function calculation.util.generate_floor_data(player, subfactory, floor)
-    local floor_data = {
-        id = floor.id,
-        lines = {}
-    }
-
-    local preferred_fuel = get_preferences(player).preferred_fuel
-    local mining_productivity = (subfactory.mining_productivity ~= nil) and
-      (subfactory.mining_productivity / 100) or player.force.mining_drill_productivity_bonus
-
-    for _, line in ipairs(Floor.get_in_order(floor, "Line")) do
-        local line_data = {
-            id = line.id,
-            timescale = subfactory.timescale,
-            percentage = line.percentage,
-            production_type = line.recipe.production_type,
-            machine_limit = {limit=line.machine.limit, hard_limit=line.machine.hard_limit},
-            total_effects = nil,  -- reference or copy, depending on case
-            beacon_consumption = 0,
-            priority_product_proto = line.priority_product_proto,  -- reference
-            recipe_proto = line.recipe.proto,  -- reference
-            machine_proto = line.machine.proto,  -- reference
-            fuel_proto = nil,  -- will be a reference
-            subfloor = nil  -- will be a floor_data object
-        }
-
-        -- Total effects
-        if line.machine.proto.mining then
-            -- If there is mining prod, a copy of the table is required
-            local effects = cutil.shallowcopy(line.total_effects)
-            effects.productivity = effects.productivity + mining_productivity
-            line_data.total_effects = effects
-        else
-            -- If there's no mining prod, a reference will suffice
-            line_data.total_effects = line.total_effects
-        end
-
-        -- Beacon total (can be calculated here, which is faster and simpler)
-        if line.beacon ~= nil and line.beacon.total_amount ~= nil then
-            line_data.beacon_consumption = line.beacon.proto.energy_usage * line.beacon.total_amount * 60
-        end
-
-        -- Fuel proto
-        if line_data.subfloor == nil then  -- the fuel_proto is only needed when there's no subfloor
-            if line.Fuel.count == 1 then  -- use the already configured Fuel, if available
-                line_data.fuel_proto = Line.get_by_gui_position(line, "Fuel", 1).proto
-            else  -- otherwise, use the preferred fuel
-                line_data.fuel_proto = preferred_fuel
-            end
-        end
-
-        -- Subfloor
-        if line.subfloor ~= nil then line_data.subfloor = 
-          calculation.util.generate_floor_data(player, subfactory, line.subfloor) end
-
-        table.insert(floor_data.lines, line_data)
-    end
-
-    return floor_data
-end
-
--- Updates the items of the given object (of given class) using the given result
--- This procedure is a bit more complicated to to retain the users ordering of items
-function calculation.util.update_items(object, result, class_name)
-    local items = result[class_name]
-
-    for _, item in pairs(_G[object.class].get_in_order(object, class_name)) do
-        local item_result_amount = items[item.proto.type][item.proto.name]
-        
-        if item_result_amount == nil then
-            _G[object.class].remove(object, item)
-        else
-            item.amount = item_result_amount
-            -- This item_result_amount has been incorporated, so it can be removed
-            items[item.proto.type][item.proto.name] = nil
-        end
-    end
-
-    for _, item_result in pairs(structures.class.to_array(items)) do
-        if object.class == "Subfactory" then
-            top_level_item = Item.init_by_item(item_result, class_name, item_result.amount, 0)
-            _G[object.class].add(object, top_level_item)
-
-        else  -- object.class == "Line"
-            item = (class_name == "Fuel") and Fuel.init_by_item(item_result, item_result.amount)
-              or Item.init_by_item(item_result, class_name, item_result.amount)
-            _G[object.class].add(object, item)
-        end
-    end
-end
-
--- Determines the net ingredients of this floor
-function calculation.util.determine_net_ingredients(floor, aggregate)
-    for _, line in ipairs(Floor.get_in_order(floor, "Line")) do
-        if line.subfloor ~= nil then 
-            calculation.util.determine_net_ingredients(line.subfloor, aggregate)
-        else
-            for _, ingredient in ipairs(Line.get_in_order(line, "Ingredient")) do
-                local simple_ingredient = {type=ingredient.proto.type, name=ingredient.proto.name, amount=ingredient.amount}
-                structures.aggregate.add(aggregate, "Ingredient", simple_ingredient)
-            end
-
-            local function subtract_product(product_type, limiter)
-                for _, product in ipairs(Line.get_in_order(line, product_type)) do
-                    local simple_product = {type=product.proto.type, name=product.proto.name, amount=product.amount}
-                    local ingredient_amount = aggregate.Ingredient[simple_product.type][simple_product.name] or 0
-                    local used_ingredient_amount = limiter(ingredient_amount, simple_product.amount)
-                    structures.aggregate.subtract(aggregate, "Ingredient", simple_product, used_ingredient_amount)
-                end
-            end
-
-            subtract_product("Product", math.min)
-            subtract_product("Byproduct", math.max)
-        end
-    end
-end
-
--- Goes through all ingredients (again), determining their satisfied_amounts
-function calculation.util.update_ingredient_satisfaction(floor, aggregate)
-    for _, line in ipairs(Floor.get_in_order(floor, "Line", true)) do
-        if line.subfloor ~= nil then 
-            local aggregate_ingredient_copy = util.table.deepcopy(aggregate.Ingredient)
-            calculation.util.update_ingredient_satisfaction(line.subfloor, aggregate)
-
-            for _, ingredient in ipairs(Line.get_in_order(line, "Ingredient")) do
-                local type, name = ingredient.proto.type, ingredient.proto.name
-                local removed_amount = (aggregate_ingredient_copy[type][name] or 0) - (aggregate.Ingredient[type][name] or 0)
-                ingredient.satisfied_amount = ingredient.amount - removed_amount
-            end
-
-        else
-            for _, ingredient in ipairs(Line.get_in_order(line, "Ingredient")) do
-                local aggregate_ingredient_amount = aggregate.Ingredient[ingredient.proto.type][ingredient.proto.name] or 0
-                local removed_amount = math.min(ingredient.amount, aggregate_ingredient_amount)
-
-                ingredient.satisfied_amount = ingredient.amount - removed_amount
-                structures.aggregate.subtract(aggregate, "Ingredient", {type=ingredient.proto.type, name=ingredient.proto.name}, removed_amount)
-            end
-        end
-    end
-end
-
--- Goes through all subfactories to update their ingredient satisfaction numbers
-function calculation.util.update_all_ingredient_satisfactions(player)
-    local factories = {"factory", "archive"}
-    for _, player_table in pairs(global.players) do
-        for _, factory_name in pairs(factories) do
-            for _, subfactory in ipairs(Factory.get_in_order(player_table[factory_name], "Subfactory")) do
-                local top_floor = Subfactory.get(subfactory, "Floor", 1)
-                local aggregate = structures.aggregate.init()  -- gets modified by the two functions
-                calculation.util.determine_net_ingredients(top_floor, aggregate)
-                calculation.util.update_ingredient_satisfaction(top_floor, aggregate)
-            end
-        end
-    end
-end
-
-
--- **** FORMULAE ****
--- Determine the amount of machines needed to produce the given recipe in the given context
-function calculation.util.determine_machine_count(machine_proto, recipe_proto, total_effects, production_ratio, timescale)
-    local launch_delay = 0
-    if recipe_proto.name == "rocket-part" then
-        local rockets_produced = production_ratio / 100
-        local launch_sequence_time = 41.25 / timescale  -- in seconds
-        -- Not sure why this forumla works, but it seemingly does
-        launch_delay = launch_sequence_time * rockets_produced
-    end
-    
-    local machine_prod_ratio = production_ratio / (1 + math.max(total_effects.productivity, 0))
+-- **** UTIL ****
+-- Determines the number of crafts per tick for the given data
+function calculation.util.determine_crafts_per_tick(machine_proto, recipe_proto, total_effects)
     local machine_speed = machine_proto.speed * (1 + math.max(total_effects.speed, -0.8))
-    return ((machine_prod_ratio / (machine_speed / recipe_proto.energy)) / timescale) + launch_delay
+    return machine_speed / recipe_proto.energy
+end
+
+-- Determine the amount of machines needed to produce the given recipe in the given context
+function calculation.util.determine_machine_count(crafts_per_tick, production_ratio, timescale, is_rocket_silo)
+    local launch_delay = 0
+    if is_rocket_silo then  -- This calculation only works for unmodified rockets
+        local launch_sequence_time = 41.25 / timescale  -- in seconds
+        launch_delay = launch_sequence_time * production_ratio
+    end
+
+    return ((production_ratio / math.min(crafts_per_tick, 60)) / timescale) + launch_delay
 end
 
 -- Calculates the production ratio from a given machine limit
--- (Forumla derived from determine_machine_count, not sure how to work in the launch_delay correctly)
-function calculation.util.determine_production_ratio(machine_proto, recipe_proto, total_effects, machine_limit, timescale)
-    local machine_speed = machine_proto.speed * (1 + math.max(total_effects.speed, -0.8))
-    local productivity_multiplier = (1 + math.max(total_effects.productivity, 0))
-    return (machine_limit --[[ -launch_delay ]]) * timescale * (machine_speed / recipe_proto.energy) * productivity_multiplier
+function calculation.util.determine_production_ratio(crafts_per_tick, machine_limit, timescale, is_rocket_silo)
+    crafts_per_tick = math.min(crafts_per_tick, 60)  -- crafts_per_tick need to be limited for these calculations
+
+    -- Formulae derived from 'determine_machine_count', it includes the launch_delay if necessary
+    if is_rocket_silo then  -- Formula reduced by Wolfram Alpha
+        return (4 * machine_limit * timescale * crafts_per_tick) / (165 * crafts_per_tick + 4)
+    else
+        return machine_limit * timescale * crafts_per_tick
+    end
 end
 
--- Calculates the ingredient/product amount after applying productivity bonuses
--- [Formula derived from: amount - proddable_amount + (proddable_amount / productivity)]
-function calculation.util.determine_prodded_amount(item, total_effects)
-    local productivity = (1 + math.max(total_effects.productivity, 0))
-    return item.amount + item.proddable_amount * ((1 / productivity) - 1)
+-- Calculates the product amount after applying productivity bonuses
+function calculation.util.determine_prodded_amount(item, crafts_per_tick, total_effects)
+    local productivity = math.max(total_effects.productivity, 0)
+    if productivity == 0 then return item.amount end
+
+    if crafts_per_tick > 60 then productivity = ((1/60) * productivity) * crafts_per_tick end
+
+    -- Return formula is a simplification of the following formula:
+    -- item.amount - item.proddable_amount + (item.proddable_amount * (productivity + 1))
+    return item.amount + (item.proddable_amount * productivity)
 end
 
 -- Determines the amount of energy needed to satisfy the given recipe in the given context
 function calculation.util.determine_energy_consumption(machine_proto, machine_count, total_effects)
-    return machine_count * (machine_proto.energy_usage * 60) * (1 + math.max(total_effects.consumption, -0.8))
+    local consumption_multiplier = 1 + math.max(total_effects.consumption, -0.8)
+    return machine_count * (machine_proto.energy_usage * 60) * consumption_multiplier
 end
 
 -- Determines the amount of pollution this recipe produces
-function calculation.util.determine_pollution(machine_proto, recipe_proto, fuel_proto, total_effects, energy_consumption)
+function calculation.util.determine_pollution(machine_proto, recipe_proto, fuel_proto,
+  total_effects, energy_consumption)
     local fuel_multiplier = (fuel_proto ~= nil) and fuel_proto.emissions_multiplier or 1
     local pollution_multiplier = 1 + math.max(total_effects.pollution, -0.8)
-    return energy_consumption * (machine_proto.emissions * 60) * pollution_multiplier * fuel_multiplier * recipe_proto.emissions_multiplier
+    return energy_consumption * (machine_proto.emissions * 60) * pollution_multiplier
+      * fuel_multiplier * recipe_proto.emissions_multiplier
 end
 
 -- Determines the amount of fuel needed in the given context

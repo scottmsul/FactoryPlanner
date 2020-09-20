@@ -2,9 +2,8 @@
 Recipe = {}
 
 function Recipe.init_by_id(recipe_id, production_type)
-    local proto = global.all_recipes.recipes[recipe_id]
     return {
-        proto = proto,
+        proto = global.all_recipes.recipes[recipe_id],
         production_type = production_type,
         valid = true,
         class = "Recipe"
@@ -12,31 +11,27 @@ function Recipe.init_by_id(recipe_id, production_type)
 end
 
 
--- Update the validity of this recipe
-function Recipe.update_validity(self)
-    if self.proto == nil then self.valid = false; return self.valid end
-    local proto_name = (type(self.proto) == "string") and self.proto or self.proto.name
-    local new_recipe_id = new.all_recipes.map[proto_name]
-    
-    if new_recipe_id ~= nil then
-        self.proto = new.all_recipes.recipes[new_recipe_id]
-        self.valid = true
-    else
-        self.proto = self.proto.name
-        self.valid = false
-    end
+function Recipe.pack(self)
+    return {
+        proto = prototyper.util.simplify_prototype(self.proto),
+        production_type = self.production_type,
+        class = self.class
+    }
+end
 
+function Recipe.unpack(packed_self)
+    return packed_self
+end
+
+
+-- Needs validation: proto
+function Recipe.validate(self)
+    self.valid = prototyper.util.validate_prototype_object(self, "proto", "recipes", nil)
     return self.valid
 end
 
--- Tries to repair this recipe, deletes it otherwise (by returning false)
--- If this is called, the recipe is invalid and has a string saved to proto
-function Recipe.attempt_repair(self, player)
-    local current_recipe_id = global.all_recipes.map[self.proto]
-    if current_recipe_id ~= nil then
-        self.proto = global.all_recipes.recipes[current_recipe_id]
-        self.valid = true
-    end
-
-    return self.valid
+-- Needs repair:
+function Recipe.repair(_, _)
+    -- If the prototype is still simplified, it couldn't be fixed by validate, so it has to be removed
+    return false
 end

@@ -1,17 +1,11 @@
-migration_0_17_38 = {}
+local migration = {}
 
-function migration_0_17_38.global()
-end
-
-function migration_0_17_38.player_table(player, player_table)
-end
-
-function migration_0_17_38.subfactory(player, subfactory)
+function migration.subfactory(subfactory)
     for _, item in pairs(Subfactory.get_in_order(subfactory, "Ingredient")) do item.top_level=true;item.sprite=nil end
     for _, item in pairs(Subfactory.get_in_order(subfactory, "Product")) do item.top_level=true;item.sprite = nil end
     for _, item in pairs(Subfactory.get_in_order(subfactory, "Byproduct")) do item.top_level=true;item.sprite = nil end
 
-    for _, floor in pairs(Subfactory.get_in_order(subfactory, "Floor")) do
+    for _, floor in pairs(Subfactory.get_all_floors(subfactory)) do
         for _, line in pairs(Floor.get_in_order(floor, "Line")) do
             for _, item in pairs(Line.get_in_order(line, "Ingredient")) do item.sprite = nil end
             for _, item in pairs(Line.get_in_order(line, "Product")) do item.sprite = nil end
@@ -29,3 +23,5 @@ function migration_0_17_38.subfactory(player, subfactory)
         end
     end
 end
+
+return migration

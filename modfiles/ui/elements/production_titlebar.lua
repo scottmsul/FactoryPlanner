@@ -1,6 +1,67 @@
--- Creates the production pane that displays 
-function add_production_pane_to(main_dialog)
-    local flow = main_dialog.add{type="flow", name="flow_production_pane", direction="vertical"}
+production_titlebar = {}
+
+-- ** LOCAL UTIL **
+-- Moves on the selection until it is on an enabled state (at least 1 view needs to be enabled)
+-- (Not useful currently as all views are enabled, but it was in the past)
+local function correct_view_state(view_state, id_to_select)
+    while true do
+        view = view_state[id_to_select]
+        if view.enabled then
+            view.selected = true
+            view_state.selected_view = view
+            break
+        else
+            id_to_select = (id_to_select % #view_state) + 1
+        end
+    end
+end
+
+-- Refreshes the current view state
+local function refresh_view_state(player, subfactory)
+    local player_table = get_table(player)
+    local timescale = ui_util.format_timescale(subfactory.timescale, true, false)
+    local bl_caption = (player_table.settings.belts_or_lanes == "belts") and {"fp.cbelts"} or {"fp.clanes"}
+    local bl_sprite = prototyper.defaults.get(player, "belts").rich_text
+    local view_state = {
+        [1] = {
+            name = "items_per_timescale",
+            caption = {"", {"fp.citems"}, "/", timescale},
+            enabled = true,
+            selected = true
+        },
+        [2] = {
+            name = "belts_or_lanes",
+            caption = {"", bl_sprite, " ", bl_caption},
+            enabled = true,
+            selected = false
+        },
+        [3] = {
+            name = "items_per_second_per_machine",
+            caption = {"", {"fp.citems"}, "/", {"fp.unit_second"}, "/[img=fp_generic_assembler]"},
+            enabled = true,
+            selected = false
+        }
+    }
+    view_state.selected_view = view_state[1]
+
+    -- Conserves the selection state from the previous view_state, if available
+    if player_table.ui_state.view_state ~= nil then
+        local id_to_select = nil
+        for i, view in ipairs(player_table.ui_state.view_state) do
+            if view.selected then id_to_select = i
+            else view_state[i].selected = false end
+        end
+        correct_view_state(view_state, id_to_select)
+    end
+
+    player_table.ui_state.view_state = view_state
+end
+
+
+-- ** TOP LEVEL **
+-- Creates the production pane that displays
+function production_titlebar.add_to(frame_main_dialog)
+    local flow = frame_main_dialog.add{type="flow", name="flow_production_pane", direction="vertical"}
 
     -- Production titlebar
     local table_titlebar = flow.add{type="table", name="table_production_titlebar", column_count=8}
@@ -21,7 +82,7 @@ function add_production_pane_to(main_dialog)
     button_matrix_solver.style.left_margin = 8
 
     -- Title
-    local title = table_titlebar.add{type="label", name="label_production_pane_title", 
+    local title = table_titlebar.add{type="label", name="label_production_pane_title",
       caption={"", "  ", {"fp.production"}, " "}}
     title.style.font = "fp-font-20p"
     title.style.top_padding = 2
@@ -66,7 +127,7 @@ function add_production_pane_to(main_dialog)
 
 
     -- Info label
-    local info = flow.add{type="label", name="label_production_info", 
+    local info = flow.add{type="label", name="label_production_info",
       caption={"", "   (",  {"fp.production_info"}, ")"}}
     info.visible = false
 
@@ -79,26 +140,26 @@ function add_production_pane_to(main_dialog)
     scroll_pane.style.horizontally_stretchable = true
     scroll_pane.style.vertically_squashable = true
 
-    refresh_production_pane(game.get_player(main_dialog.player_index))
+    production_titlebar.refresh(game.get_player(frame_main_dialog.player_index))
 end
 
 -- Refreshes the production pane (titlebar + table)
-function refresh_production_pane(player)
-    local main_dialog = player.gui.screen["fp_frame_main_dialog"]
+function production_titlebar.refresh(player)
+    local frame_main_dialog = player.gui.screen["fp_frame_main_dialog"]
     -- Cuts function short if the approriate GUI's haven't been initialized yet
-    if not (main_dialog and main_dialog["flow_production_pane"]) then return end
+    if not (frame_main_dialog and frame_main_dialog["flow_production_pane"]) then return end
 
     local player_table = get_table(player)
     local ui_state = player_table.ui_state
     local subfactory = ui_state.context.subfactory
 
-    local table_titlebar = main_dialog["flow_production_pane"]["table_production_titlebar"]
+    local table_titlebar = frame_main_dialog["flow_production_pane"]["table_production_titlebar"]
     local table_view = table_titlebar["table_production_titlebar_view_selection"]
     -- Only show the titlebar if a valid subfactory is shown
     table_titlebar.visible = (subfactory ~= nil and subfactory.valid)
 
     -- Configure Floor labels and buttons
-    if subfactory ~= nil and subfactory.valid then        
+    if subfactory ~= nil and subfactory.valid then
         local floor = ui_state.context.floor
 
         -- Refresh button
@@ -117,13 +178,13 @@ function refresh_production_pane(player)
 
         -- TopLevelItem-amount toggle
         table_titlebar["fp_button_item_amount_toggle"].visible = (floor.level > 1)
-        
+
         -- Update the dynamic parts of the view state buttons
         local state_existed = (ui_state.view_state ~= nil)
         refresh_view_state(player, subfactory)
 
         -- Refresh subfactory pane to update it with the selected state
-        if not state_existed then refresh_subfactory_pane(player) end
+        if not state_existed then subfactory_pane.refresh(player) end
 
         for _, view in ipairs(ui_state.view_state) do
             local button = table_view["fp_button_production_titlebar_view_" .. view.name]
@@ -136,7 +197,7 @@ function refresh_production_pane(player)
                 button.tooltip = {"", {"fp.items_per_timescale"}, " ", timescale, ".",
                   "\n", {"fp.cycle_production_views"}}
             elseif view.name == "belts_or_lanes" then
-                local belts_lanes_label = (player_table.settings.belts_or_lanes == "belts") 
+                local belts_lanes_label = (player_table.settings.belts_or_lanes == "belts")
                   and {"fp.belts"} or {"fp.lanes"}
                 button.tooltip = {"", {"fp.belts_or_lanes", belts_lanes_label}, "\n", {"fp.cycle_production_views"}}
             end
@@ -147,12 +208,12 @@ function refresh_production_pane(player)
         end
     end
 
-    refresh_production_table(player)
+    production_table.refresh(player)
 end
 
 
 -- Handles a click on a button that changes the viewed floor of a subfactory
-function handle_floor_change_click(player, destination)
+function production_titlebar.handle_floor_change_click(player, destination)
     local ui_state = get_ui_state(player)
     local subfactory = ui_state.context.subfactory
     local floor = ui_state.context.floor
@@ -171,16 +232,15 @@ function handle_floor_change_click(player, destination)
         ui_util.context.set_floor(player, selected_floor)
 
         -- Remove floor if no recipes have been added to it
-        Floor.delete_empty(floor)
+        Floor.remove_if_empty(floor)
 
-        ui_state.current_activity = nil
         calculation.update(player, subfactory, true)
     end
 end
 
 
 -- Toggles the button-style and ui_state of floor_total
-function toggle_floor_total_display(player, button)
+function production_titlebar.toggle_floor_total_display(player, button)
     local flags = get_flags(player)
 
     if button.style.name == "button" then
@@ -192,61 +252,20 @@ function toggle_floor_total_display(player, button)
         button.style = "button"
     end
 
-    refresh_main_dialog(player)
+    main_dialog.refresh(player)
 end
 
-
--- Refreshes the current view state
-function refresh_view_state(player, subfactory)
-    local player_table = get_table(player)
-    local timescale = ui_util.format_timescale(subfactory.timescale, true, false)
-    local bl_caption = (player_table.settings.belts_or_lanes == "belts") and {"fp.cbelts"} or {"fp.clanes"}
-    local bl_sprite = player_table.preferences.preferred_belt.rich_text
-    local view_state = {
-        [1] = {
-            name = "items_per_timescale",
-            caption = {"", {"fp.citems"}, "/", timescale},
-            enabled = true,
-            selected = true
-        },
-        [2] = {
-            name = "belts_or_lanes",
-            caption = {"", bl_sprite, " ", bl_caption},
-            enabled = true,
-            selected = false
-        },
-        [3] = {
-            name = "items_per_second_per_machine",
-            caption = {"", {"fp.citems"}, "/", {"fp.unit_second"}, "/[img=" .. top_crafting_machine_sprite .. "]"},
-            enabled = true,
-            selected = false
-        }
-    }
-    view_state.selected_view = view_state[1]
-
-    -- Conserves the selection state from the previous view_state, if available
-    if player_table.ui_state.view_state ~= nil then
-        local id_to_select = nil
-        for i, view in ipairs(player_table.ui_state.view_state) do
-            if view.selected then id_to_select = i
-            else view_state[i].selected = false end
-        end
-        correct_view_state(view_state, id_to_select)
-    end
-
-    player_table.ui_state.view_state = view_state
-end
 
 -- Sets the current view to the given view (If no view if provided, it sets it to the next enabled one)
-function change_view_state(player, view_name)
+function production_titlebar.change_view_state(player, view_name)
     local ui_state = get_ui_state(player)
 
     -- Return if table_view_selection does not exist yet (this is really crappy and ugly)
-    local main_dialog = player.gui.screen["fp_frame_main_dialog"]
-    if not main_dialog or not main_dialog.visible then return end
-    local table_titlebar = main_dialog["flow_production_pane"]["table_production_titlebar"]
-    if not (main_dialog["flow_production_pane"] and main_dialog["flow_production_pane"]["table_production_titlebar"]
-     and table_titlebar["table_production_titlebar_view_selection"]) then return end
+    local frame_main_dialog = player.gui.screen["fp_frame_main_dialog"]
+    if not frame_main_dialog or not frame_main_dialog.visible then return end
+    local table_titlebar = frame_main_dialog["flow_production_pane"]["table_production_titlebar"]
+    if not (frame_main_dialog["flow_production_pane"] and frame_main_dialog["flow_production_pane"]
+      ["table_production_titlebar"] and table_titlebar["table_production_titlebar_view_selection"]) then return end
 
     -- Only change the view_state if it exists and is visible
     if ui_state.view_state ~= nil and table_titlebar.visible then
@@ -267,20 +286,5 @@ function change_view_state(player, view_name)
         correct_view_state(ui_state.view_state, id_to_select)
     end
 
-    refresh_main_dialog(player)
-end
-
--- Moves on the selection until it is on an enabled state (at least 1 view needs to be enabled)
--- (Not useful currently as all views are enabled, but it was in the past)
-function correct_view_state(view_state, id_to_select)
-    while true do
-        view = view_state[id_to_select]
-        if view.enabled then
-            view.selected = true
-            view_state.selected_view = view
-            break
-        else
-            id_to_select = (id_to_select % #view_state) + 1
-        end
-    end
+    main_dialog.refresh(player)
 end

@@ -4,29 +4,60 @@ remote_actions = {
     recipebook = {}
 }
 
--- The existance and API-version of these mods does not need to be checked here as
--- this function wouldn't be callable if they weren't valid
+-- Maps the internal name of the mod to the interface name they use
+local name_interface_map = {fnei="fnei", wiiruf="wiiuf", recipebook="RecipeBook"}
 
+-- The existance of these mods does not need to be checked here as
+-- these functions wouldn't be callable if they didn't exist
+
+
+-- ** LOCAL UTIL **
+local function incompatible_version_error(player, remote_action)
+    local message = {"fp.error_remote_version_incompatible", {"fp.interface_name_" .. remote_action}}
+    titlebar.enqueue_message(player, message, "error", 1, true)
+end
+
+-- Makes sure the remote call actually opened another window, show an error message otherwise
+local function check_success(player, remote_action, object_type)
+    if main_dialog.is_in_focus(player) then
+        local message = {"fp.error_remote_lookup_failed", {"fp.pl_" .. object_type, 1},
+          {"fp.interface_name_" .. remote_action}}
+        titlebar.enqueue_message(player, message, "error", 1, true)
+    end
+end
+
+
+-- ** TOP LEVEL **
 -- 'data' needs to contain 'item' (proto) and 'click'
 function remote_actions.show_item(player, remote_action, data)
-    remote_actions[remote_action].show_item(player, data.item, data.click)
+    local remote_version = remote.call(name_interface_map[remote_action], "version")
+    if remote_version == remote_actions[remote_action].version then
+        remote_actions[remote_action].show_item(player, data.item, data.click)
+        check_success(player, remote_action, "item")
+
+    else incompatible_version_error(player, remote_action) end
 end
 
 -- 'data' needs to contain 'recipe' (proto) and 'line_products'
 function remote_actions.show_recipe(player, remote_action, data)
-    -- Try to determine a main ingredient for this recipe
-    local main_product_name = nil
-    if data.recipe.main_product then
-        main_product_name = data.recipe.main_product.name
-    elseif #data.line_products == 1 then
-        main_product_name = data.line_products[1].name
-    end
+    local remote_version = remote.call(name_interface_map[remote_action], "version")
+    if remote_version == remote_actions[remote_action].version then
+        -- Try to determine a main ingredient for this recipe
+        local main_product_name = nil
+        if data.recipe.main_product then
+            main_product_name = data.recipe.main_product.name
+        elseif #data.line_products == 1 then
+            main_product_name = data.line_products[1].name
+        end
 
-    remote_actions[remote_action].show_recipe(player, data.recipe, main_product_name)
+        remote_actions[remote_action].show_recipe(player, data.recipe, main_product_name)
+        check_success(player, remote_action, "recipe")
+
+    else incompatible_version_error(player, remote_action) end
 end
 
 
--- **** FNEI ****
+-- ** FNEI **
 -- This indicates the version of the FNEI remote interface this is compatible with
 remote_actions.fnei.version = 2
 
@@ -45,7 +76,7 @@ function remote_actions.fnei.show_recipe(_, recipe_proto, main_product_name)
 end
 
 
--- **** WIIRUF ****
+-- ** WIIRUF **
 -- This indicates the version of the WIIRUF remote interface this is compatible with
 remote_actions.wiiruf.version = 1
 
@@ -62,18 +93,16 @@ function remote_actions.wiiruf.show_recipe(player, recipe_proto, main_product_na
 end
 
 
--- **** RecipeBook ****
+-- ** RecipeBook **
 -- This indicates the version of the RecipeBook remote interface this is compatible with
-remote_actions.recipebook.version = 2
-
-local source_data = {mod_name="factoryplanner", gui_name="main_dialog"}
+remote_actions.recipebook.version = 4
 
 -- Opens RecipeBook to show the given item
 function remote_actions.recipebook.show_item(player, item_proto, _)
-    remote.call("RecipeBook", "open_gui", player.index, "material", {item_proto.type, item_proto.name}, source_data)
+    remote.call("RecipeBook", "open_page", player.index, item_proto.type, item_proto.name)
 end
 
 -- Opens RecipeBook to show the given recipe
 function remote_actions.recipebook.show_recipe(player, recipe_proto, _)
-    remote.call("RecipeBook", "open_gui", player.index, "recipe", recipe_proto.name, source_data)
+    remote.call("RecipeBook", "open_page", player.index, "recipe", recipe_proto.name)
 end

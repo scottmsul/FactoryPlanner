@@ -1,133 +1,204 @@
-loader = {
-    util = {},
-    machines = {},
-    belts = {},
-    fuels = {},
-    beacons = {}
-}
+-- The loader contains the code that runs on_load, pre-caching some data structures that are needed later
+loader = {}
 
--- The purpose of a loader is to recreate the global tables containing all relevant data types.
--- It also updates the factories to the new id's of all those datasets.
--- Its purpose is to not lose any data, so if a dataset of a factory-dataset doesn't exist anymore
--- in the newly loaded global tables, it saves the name in string-form instead and makes the
--- concerned factory-dataset invalid. This accomplishes that invalid data is only permanently
--- removed when the user tells the subfactory to repair itself, giving him a chance to re-add the
--- missing mods. It is also a better separation of responsibilities and avoids some redundant code.
+-- ** LOCAL UTIL **
+-- Returns a list of recipe groups in their proper order
+local function ordered_recipe_groups()
+    group_dict = {}
 
--- (Load order is important here: machines->recipes->items->fuels)
-local data_types = {"machines", "recipes", "items", "fuels", "belts", "modules", "beacons"}
-
--- Generates the new data and mapping_tables and saves them to lua-globals
-function loader.setup()
-    new = {}
-    for _, data_type in ipairs(data_types) do
-        new["all_" .. data_type] = generator["all_" .. data_type]()
+    -- Make a dict with all recipe groups
+    if not global.all_recipes.recipes then return end
+    for _, recipe in pairs(global.all_recipes.recipes) do
+        if group_dict[recipe.group.name] == nil then
+            group_dict[recipe.group.name] = recipe.group
+        end
     end
 
-    -- Generate alt_actions table
-    global.alt_actions = loader.util.determine_alt_actions()
-end
-
--- Updates the relevant data of the given player to fit the new data
-function loader.run(player_table)
-    -- Then, update the default/preferred datasets
-    for _, data_type in ipairs(data_types) do
-        local f = loader[data_type]
-        if f ~= nil then f.run(player_table) end
+    -- Invert it
+    local groups = {}
+    for _, group in pairs(group_dict) do
+        table.insert(groups, group)
     end
 
-    -- Update the validity of all elements of the factory and archive
-    Factory.update_validity(player_table.factory)
-    Factory.update_validity(player_table.archive)
-end
-
--- Overwrites the factorio global data with the new data in lua-global
-function loader.finish()
-    for _, data_type in ipairs(data_types) do
-        global["all_" .. data_type] = new["all_" .. data_type]
+    -- Sort it
+    local function sorting_function(a, b)
+        if a.order < b.order then return true
+        elseif a.order > b.order then return false end
     end
-    new = nil
+    table.sort(groups, sorting_function)
 
-    run_on_load()
+    return groups
+end
+
+-- Maps all items to the recipes that produce or consume them ([item_type][item_name] = {[recipe_id] = true}
+local function recipe_map_from(item_type)
+    local map = {}
+
+    if not global.all_recipes.recipes then return end
+    for _, recipe in pairs(global.all_recipes.recipes) do
+        for _, item in ipairs(recipe[item_type]) do
+            map[item.type] = map[item.type] or {}
+            map[item.type][item.name] = map[item.type][item.name] or {}
+            map[item.type][item.name][recipe.id] = true
+        end
+    end
+
+    return map
 end
 
 
--- Runs the update proceedure for a simple 1-dimensional kind of prototype
-function loader.util.simple_update(player_table, type)
-    local preferences = player_table.preferences
-    local plural_type = type .. "s"
-    local new_id = new["all_" .. plural_type].map[preferences["preferred_" .. type].name]
-    if new_id ~= nil then
-        preferences["preferred_" .. type] = new["all_" .. plural_type][plural_type][new_id]
-    else
-        preferences["preferred_" .. type] = data_util.base_data["preferred_" .. type](new)
-    end  
+-- Generates a list of all items, sorted for display in the picker
+local function sorted_items()
+    -- Combines item and fluid prototypes into an unsorted number-indexed array
+    local items = {}
+    local all_items = global.all_items
+    for _, type in pairs({"item", "fluid"}) do
+        for _, item in pairs(all_items.types[all_items.map[type]].items) do
+            -- Silly checks needed here for migration purposes
+            if item.group.valid and item.subgroup.valid then table.insert(items, item) end
+        end
+    end
+
+    -- Sorts the objects according to their group, subgroup and order
+    local function sorting_function(a, b)
+        if a.group.order < b.group.order then return true
+        elseif a.group.order > b.group.order then return false
+        elseif a.subgroup.order < b.subgroup.order then return true
+        elseif a.subgroup.order > b.subgroup.order then return false
+        elseif a.order < b.order then return true
+        elseif a.order > b.order then return false end
+    end
+
+    table.sort(items, sorting_function)
+    return items
+end
+
+-- Generates a table mapping item identifier to their prototypes
+local function identifier_item_map()
+    local map = {}
+
+    local all_items = global.all_items
+    for _, type in pairs({"item", "fluid"}) do
+        for _, item in pairs(all_items.types[all_items.map[type]].items) do
+            -- Identifier existance-check for migration reasons
+            if item.identifier ~= nil then map[item.identifier] = item end
+        end
+    end
+
+    return map
 end
 
 
--- Update preferred belt
-function loader.belts.run(player_table)
-    loader.util.simple_update(player_table, "belt") 
+-- Generates a table containing all modules per category, ordered by tier
+local function module_tier_map()
+    local map = {}
+
+    if not global.all_modules then return end
+    for _, category in pairs(global.all_modules.categories) do
+        map[category.id] = {}
+        for _, module in pairs(category.modules) do
+            map[category.id][module.tier] = module
+        end
+    end
+
+    return map
 end
 
--- Update preferred fuel
-function loader.fuels.run(player_table)
-    loader.util.simple_update(player_table, "fuel") 
+-- Generates a table mapping modules to their prototype by name
+local function module_name_map()
+    local map = {}
+
+    if not global.all_modules then return end
+    for _, category in pairs(global.all_modules.categories) do
+        for _, module in pairs(category.modules) do
+            map[module.name] = module
+        end
+    end
+
+    return map
 end
 
--- Update preferred beacon
-function loader.beacons.run(player_table)
-    loader.util.simple_update(player_table, "beacon") 
+
+local attribute_generators = {}
+
+function attribute_generators.beacons(beacon)
+    return {"", {"fp.module_slots"}, ": " .. beacon.module_limit .. "\n",
+           {"fp.effectivity"}, ": " .. (beacon.effectivity * 100) .. "%\n",
+           {"fp.energy_consumption"}, ": ", ui_util.format_SI_value(beacon.energy_usage, "W", 3)}
 end
 
--- Update default machines
-function loader.machines.run(player_table)
-    local preferences = player_table.preferences
-    local default_machines = {categories = {}, map = {}}
+function attribute_generators.fuels(fuel)
+    return {"", {"fp.fuel_value"}, ": ", ui_util.format_SI_value(fuel.fuel_value, "J", 3), "\n",
+           {"fp.emissions_multiplier"}, ": " .. fuel.emissions_multiplier}
+end
 
-    for new_category_id, new_category in ipairs(new.all_machines.categories) do
-        local machine_found = false
-        local old_category_id = preferences.default_machines.map[new_category.name]
-        if old_category_id ~= nil then  -- Category found, default machine might not exist anymore
-            local old_default_machine = preferences.default_machines.categories[old_category_id]
-            local new_machine_id = new_category.map[old_default_machine.name]
-            if new_machine_id ~= nil then  -- Old machine still exists, apply it
-                default_machines.categories[new_category_id] = new_category.machines[new_machine_id]
-                default_machines.map[new_category.name] = new_category_id
-                machine_found = true
+function attribute_generators.belts(belt)
+    return {"", {"fp.throughput"}, ": " .. belt.throughput .. " ", {"fp.items"}, "/", {"fp.unit_second"}}
+end
+
+function attribute_generators.machines(machine)
+    local energy_usage = machine.energy_usage * 60
+    return {"", {"fp.crafting_speed"}, ": " .. ui_util.format_number(machine.speed, 4) .. "\n",
+           {"fp.energy_consumption"}, ": ", ui_util.format_SI_value(energy_usage, "W", 3), "\n",
+           {"fp.cpollution"}, ": ", ui_util.format_SI_value(energy_usage * machine.emissions * 60, "P/m", 3), "\n",
+           {"fp.module_slots"}, ": " .. machine.module_limit}
+end
+
+-- Generates the attribute strings for some types of prototypes
+local function prototype_attributes()
+    local relevant_prototypes = {"belts", "beacons", "fuels", "machines"}
+    local attributes = {}
+
+    for _, type in pairs(relevant_prototypes) do
+        local all_prototypes = global["all_" .. type]
+        if not all_prototypes or not all_prototypes.structure_type then return end
+
+        local generator_function = attribute_generators[type]
+
+        attributes[type] = {}
+        local attribute_type = attributes[type]
+
+        if all_prototypes.structure_type == "simple" then
+            for proto_id, prototype in pairs(all_prototypes[type]) do
+                attribute_type[proto_id] = generator_function(prototype)
+            end
+
+        else  -- structure_type == "complex"
+            for category_id, category in pairs(all_prototypes.categories) do
+                attribute_type[category_id] = {}
+                local attribute_category = attribute_type[category_id]
+
+                for proto_id, prototype in pairs(category[type]) do
+                    attribute_category[proto_id] = generator_function(prototype)
+                end
             end
         end
-        if not machine_found then  -- Choose new default, if the old default is no longer valid
-            default_machines.categories[new_category_id] = new_category.machines[1]
-            default_machines.map[new_category.name] = new_category_id
-        end
     end
 
-    preferences.default_machines = default_machines
+    return attributes
 end
 
 
--- **** ALT ACTIONS ****
--- Returns a table with the names of all valid alt-actions
-function loader.util.determine_alt_actions()
-    local alt_actions = {["none"] = 1}
-
-    local remote_interfaces = {
-        [1] = {internal_name = "fnei", interface_name = "fnei"},
-        [2] = {internal_name = "wiiruf", interface_name = "wiiuf"},
-        [3] = {internal_name = "recipebook", interface_name = "RecipeBook"}
-    }
-
-    local action_index = table_size(alt_actions)
-    for _, remote_interface in ipairs(remote_interfaces) do
-        if remote.interfaces[remote_interface.interface_name] ~= nil
-          and remote.call(remote_interface.interface_name, "version")
-          == remote_actions[remote_interface.internal_name].version then
-
-            action_index = action_index + 1
-            alt_actions[remote_interface.internal_name] = action_index
-        end
+-- ** TOP LEVEL **
+-- Creates some lua-global tables for convenience and performance
+function loader.run()
+    local freeplay = remote.interfaces["freeplay"]
+    if DEVMODE and freeplay then  -- Disable freeplay popup-message
+        if freeplay["set_skip_intro"] then remote.call("freeplay", "set_skip_intro", true) end
+        if freeplay["set_disable_crashsite"] then remote.call("freeplay", "set_disable_crashsite", true) end
     end
 
-    return alt_actions
+    ORDERED_RECIPE_GROUPS = ordered_recipe_groups()
+    RECIPE_MAPS = {
+        produce = recipe_map_from("products"),
+        consume = recipe_map_from("ingredients")
+    }
+
+    SORTED_ITEMS = sorted_items()
+    IDENTIFIER_ITEM_MAP = identifier_item_map()
+
+    MODULE_TIER_MAP = module_tier_map()
+    MODULE_NAME_MAP = module_name_map()
+
+    PROTOTYPE_ATTRIBUTES = prototype_attributes()
 end

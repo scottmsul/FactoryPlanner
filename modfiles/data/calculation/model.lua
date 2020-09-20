@@ -11,7 +11,6 @@ function model.update_subfactory(subfactory_data)
     model.update_floor(subfactory_data.top_floor, aggregate)  -- updates aggregate
 
     -- Fuels are combined with Ingredients for top-level purposes
-    structures.aggregate.combine_classes(aggregate, "Ingredient", "Fuel")
     calculation.interface.set_subfactory_result {
         player_index = subfactory_data.player_index,
         energy_consumption = aggregate.energy_consumption,
@@ -22,8 +21,9 @@ function model.update_subfactory(subfactory_data)
     }
 end
 
+
 function model.update_floor(floor_data, aggregate)
-    local desired_products = util.table.deepcopy(aggregate.Product)
+    local desired_products = structures.class.copy(aggregate.Product)
 
     for _, line_data in ipairs(floor_data.lines) do
         local subfloor = line_data.subfloor
@@ -42,44 +42,28 @@ function model.update_floor(floor_data, aggregate)
                     subfloor_aggregate.Product[type][name] = aggregate.Product[type][name]
                 end
             end
-            
+
             local floor_products = structures.class.to_array(subfloor_aggregate.Product)
             model.update_floor(subfloor, subfloor_aggregate)  -- updates aggregate
+
 
             -- Convert the internal product-format into positive products for the line and main aggregate
             for _, product in pairs(floor_products) do
                 local aggregate_product_amount = subfloor_aggregate.Product[product.type][product.name] or 0
                 subfloor_aggregate.Product[product.type][product.name] = product.amount - aggregate_product_amount
             end
-            
+
             -- Update the main aggregate with the results
             aggregate.energy_consumption = aggregate.energy_consumption + subfloor_aggregate.energy_consumption
             aggregate.pollution = aggregate.pollution + subfloor_aggregate.pollution
 
-            local function update_main_aggregate(class_name, destination_class_name)
-                for _, item in ipairs(structures.class.to_array(subfloor_aggregate[class_name])) do
-                    local byproduct_amount = aggregate.Byproduct[item.type][item.name]
-
-                    if (class_name == "Ingredient" or class_name == "Fuel") and byproduct_amount ~= nil then
-                        if byproduct_amount >= item.amount then
-                            structures.aggregate.subtract(aggregate, "Byproduct", item)
-                        else
-                            structures.aggregate.subtract(aggregate, "Byproduct", item, byproduct_amount)
-                            structures.aggregate.add(aggregate, destination_class_name,
-                              item, (item.amount - byproduct_amount))
-                        end
-
-                    else
-                        local amount = (class_name == "Product") and -item.amount or item.amount
-                        structures.aggregate.add(aggregate, destination_class_name, item, amount)
-                    end
-                end
+            -- Subtract subfloor products as produced
+            for _, item in ipairs(structures.class.to_array(subfloor_aggregate.Product)) do
+                structures.aggregate.subtract(aggregate, "Product", item)
             end
-            
-            update_main_aggregate("Byproduct", "Byproduct")
-            update_main_aggregate("Product", "Product")
-            update_main_aggregate("Ingredient", "Product")
-            update_main_aggregate("Fuel", "Product")
+
+            structures.class.balance_items(subfloor_aggregate.Ingredient, aggregate, "Byproduct", "Product")
+            structures.class.balance_items(subfloor_aggregate.Byproduct, aggregate, "Product", "Byproduct")
 
 
             -- Update the parent line of the subfloor with the results from the subfloor aggregate
@@ -90,12 +74,12 @@ function model.update_floor(floor_data, aggregate)
                 machine_count = subfloor_aggregate.machine_count,
                 energy_consumption = subfloor_aggregate.energy_consumption,
                 pollution = subfloor_aggregate.pollution,
-                production_ratio = subfloor_aggregate.production_ratio,
-                uncapped_production_ratio = subfloor_aggregate.uncapped_production_ratio,
+                production_ratio = nil,
+                uncapped_production_ratio = nil,
                 Product = subfloor_aggregate.Product,
                 Byproduct = subfloor_aggregate.Byproduct,
                 Ingredient = subfloor_aggregate.Ingredient,
-                Fuel = subfloor_aggregate.Fuel
+                fuel_amount = nil
             }
         else
             -- Update aggregate according to the current line, which also adjusts the respective line object
@@ -108,14 +92,24 @@ function model.update_floor(floor_data, aggregate)
         if desired_products[product.type][product.name] == nil then
             structures.aggregate.add(aggregate, "Ingredient", product)
             structures.aggregate.subtract(aggregate, "Product", product)
+        else
+            -- Add top level products that are also ingredients to the ingredients
+            local negative_amount = product.amount - desired_products[product.type][product.name]
+            if negative_amount > 0 then
+                structures.aggregate.add(aggregate, "Ingredient", product, negative_amount)
+            end
         end
     end
 end
 
+
 function model.update_line(line_data, aggregate)
+    local recipe_proto, machine_proto = line_data.recipe_proto, line_data.machine_proto
+    local total_effects, timescale = line_data.total_effects, line_data.timescale
+
     -- Determine relevant products
     local relevant_products, byproducts = {}, {}
-    for _, product in pairs(line_data.recipe_proto.products) do
+    for _, product in pairs(recipe_proto.products) do
         if aggregate.Product[product.type][product.name] ~= nil then
             table.insert(relevant_products, product)
         else
@@ -125,14 +119,17 @@ function model.update_line(line_data, aggregate)
 
     -- Determine production ratio
     local production_ratio, uncapped_production_ratio = 0, 0
+    local crafts_per_tick = calculation.util.determine_crafts_per_tick(machine_proto, recipe_proto, total_effects)
 
     -- Determines the production ratio that would be needed to fully satisfy the given product
     local function determine_production_ratio(relevant_product)
         local demand = aggregate.Product[relevant_product.type][relevant_product.name]
-        return ((demand * (line_data.percentage / 100)) / relevant_product.net_amount)
+        local prodded_amount = calculation.util.determine_prodded_amount(relevant_product,
+          crafts_per_tick, total_effects)
+        return (demand * (line_data.percentage / 100)) / prodded_amount
     end
 
-    local relevant_product_count = table_size(relevant_products)
+    local relevant_product_count = #relevant_products
     if relevant_product_count == 1 then
         local relevant_product = relevant_products[1]
         production_ratio = determine_production_ratio(relevant_product)
@@ -140,16 +137,14 @@ function model.update_line(line_data, aggregate)
     elseif relevant_product_count >= 2 then
         local priority_proto = line_data.priority_product_proto
 
-        for _, relevant_product in pairs(relevant_products) do
-            -- Use the priority product to determine the production ratio, if it's set
-            if priority_proto ~= nil then
+        for _, relevant_product in ipairs(relevant_products) do
+            if priority_proto ~= nil then  -- Use the priority product to determine the production ratio, if it's set
                 if relevant_product.type == priority_proto.type and relevant_product.name == priority_proto.name then
                     production_ratio = determine_production_ratio(relevant_product)
                     break
                 end
 
-            -- Otherwise, determine the highest production ratio needed to fulfill every demand
-            else
+            else  -- Otherwise, determine the highest production ratio needed to fulfill every demand
                 local ratio = determine_production_ratio(relevant_product)
                 production_ratio = math.max(production_ratio, ratio)
             end
@@ -158,27 +153,21 @@ function model.update_line(line_data, aggregate)
     uncapped_production_ratio = production_ratio  -- retain the uncapped ratio for line_data
 
     -- Limit the machine_count by reducing the production_ratio, if necessary
-    if line_data.machine_limit.limit ~= nil then
-        local capped_production_ratio = calculation.util.determine_production_ratio(line_data.machine_proto, 
-          line_data.recipe_proto, line_data.total_effects, line_data.machine_limit.limit, line_data.timescale)
-        production_ratio = line_data.machine_limit.hard_limit and 
+    local machine_limit = line_data.machine_limit
+    if machine_limit.limit ~= nil then
+        local capped_production_ratio = calculation.util.determine_production_ratio(crafts_per_tick,
+          machine_limit.limit, timescale, machine_proto.is_rocket_silo)
+        production_ratio = machine_limit.hard_limit and
           capped_production_ratio or math.min(production_ratio, capped_production_ratio)
     end
-
-    -- Set the production ratio of the current aggregate to the one of the first line (relevant for subfloors)
-    aggregate.production_ratio = aggregate.production_ratio or production_ratio
-    aggregate.uncapped_production_ratio = aggregate.uncapped_production_ratio or uncapped_production_ratio
 
 
     -- Determines the amount of the given item, considering productivity
     local function determine_amount_with_productivity(item)
-        if (item.proddable_amount > 0) and (line_data.total_effects.productivity > 0) then
-            return (calculation.util.determine_prodded_amount(item, line_data.total_effects) * production_ratio)
-        else
-            return (item.amount * production_ratio)
-        end
+        local prodded_amount = calculation.util.determine_prodded_amount(item, crafts_per_tick, total_effects)
+        return prodded_amount * production_ratio
     end
-    
+
     -- Determine byproducts
     local Byproduct = structures.class.init()
     for _, byproduct in pairs(byproducts) do
@@ -190,33 +179,29 @@ function model.update_line(line_data, aggregate)
 
     -- Determine products
     local Product = structures.class.init()
-    for _, product in pairs(relevant_products) do
+    for _, product in ipairs(relevant_products) do
         local product_amount = determine_amount_with_productivity(product)
+        local product_demand = aggregate.Product[product.type][product.name] or 0
 
-        -- Don't include net negative relevant products as products
-        if product.net_amount <= 0 then
-            structures.class.add(Byproduct, product, product_amount)
-            structures.aggregate.add(aggregate, "Byproduct", product, product_amount)
-
-        else
-            local product_demand = aggregate.Product[product.type][product.name] or 0
-            if product_amount > product_demand then
-                local overflow_amount = product_amount - product_demand
-                structures.class.add(Byproduct, product, overflow_amount)
-                structures.aggregate.add(aggregate, "Byproduct", product, overflow_amount)
-                product_amount = product_demand  -- desired amount
-            end
-            
-            structures.class.add(Product, product, product_amount)
-            structures.aggregate.subtract(aggregate, "Product", product, product_amount)
+        if product_amount > product_demand then
+            local overflow_amount = product_amount - product_demand
+            structures.class.add(Byproduct, product, overflow_amount)
+            structures.aggregate.add(aggregate, "Byproduct", product, overflow_amount)
+            product_amount = product_demand  -- desired amount
         end
+
+        structures.class.add(Product, product, product_amount)
+        structures.aggregate.subtract(aggregate, "Product", product, product_amount)
     end
 
     -- Determine ingredients
     local Ingredient = structures.class.init()
-    for _, ingredient in pairs(line_data.recipe_proto.ingredients) do
-        local ingredient_amount = determine_amount_with_productivity(ingredient)
-        
+    for _, ingredient in pairs(recipe_proto.ingredients) do
+        -- If productivity is to be ignored, un-apply it by applying the product-productivity to an ingredient,
+        -- effectively reversing the effect (this is way simpler than doing it properly)
+        local ingredient_amount = (ingredient.ignore_productivity) and
+          determine_amount_with_productivity(ingredient) or (ingredient.amount * production_ratio)
+
         structures.class.add(Ingredient, ingredient, ingredient_amount)
 
         -- Reduce the line-byproducts and -ingredients so only the net amounts remain
@@ -225,52 +210,41 @@ function model.update_line(line_data, aggregate)
             structures.class.subtract(Byproduct, ingredient, ingredient_amount)
             structures.class.subtract(Ingredient, ingredient, byproduct_amount)
         end
-
-        -- Ingredients should be taken out of byproducts as much as possible for the aggregate
-        local available_byproduct = aggregate.Byproduct[ingredient.type][ingredient.name]
-        if available_byproduct ~= nil then
-            if available_byproduct >= ingredient_amount then
-                structures.aggregate.subtract(aggregate, "Byproduct", ingredient, ingredient_amount)
-            else  -- available_byproduct < ingredient_amount
-                structures.aggregate.subtract(aggregate, "Byproduct", ingredient, available_byproduct)
-                structures.aggregate.add(aggregate, "Product", ingredient, (ingredient_amount - available_byproduct))
-            end
-        else
-            structures.aggregate.add(aggregate, "Product", ingredient, ingredient_amount)
-        end
     end
+    structures.class.balance_items(Ingredient, aggregate, "Byproduct", "Product")
 
 
     -- Determine machine count
-    local machine_count = calculation.util.determine_machine_count(line_data.machine_proto, line_data.recipe_proto,
-      line_data.total_effects, production_ratio, line_data.timescale)
-    -- Set the machine count of the current aggregate to the one of the first line (relevant for subfloors)
-    aggregate.machine_count = aggregate.machine_count or machine_count
+    local machine_count = calculation.util.determine_machine_count(crafts_per_tick, production_ratio,
+      timescale, machine_proto.is_rocket_silo)
+
+    -- Add the integer machine count to the aggregate so it can be displayed on the origin_line
+    aggregate.machine_count = aggregate.machine_count + math.ceil(machine_count)
 
 
     -- Determine energy consumption (including potential fuel needs) and pollution
-    local energy_consumption = calculation.util.determine_energy_consumption(line_data.machine_proto,
-      machine_count, line_data.total_effects)
-    local pollution = calculation.util.determine_pollution(line_data.machine_proto, line_data.recipe_proto,
-      line_data.fuel_proto, line_data.total_effects, energy_consumption)
-    
-    local Fuel = structures.class.init()
-    local burner = line_data.machine_proto.burner
+    local fuel_proto = line_data.fuel_proto
+    local energy_consumption = calculation.util.determine_energy_consumption(machine_proto,
+      machine_count, total_effects)  -- calculated in W/timescale
+    local pollution = calculation.util.determine_pollution(machine_proto, recipe_proto,
+      fuel_proto, total_effects, energy_consumption)  -- calculated in P/m
 
-    if burner ~= nil and burner.categories["chemical"] then  -- only handles chemical fuels for now
-        local fuel_proto = line_data.fuel_proto  -- Lines without subfloors will always have a fuel_proto attached
-        local fuel_amount = calculation.util.determine_fuel_amount(energy_consumption, burner, 
-          fuel_proto.fuel_value, line_data.timescale)
-        
+    local fuel_amount = nil
+    if fuel_proto ~= nil then  -- Seeing a fuel_proto here means it needs to be re-calculated
+        fuel_amount = calculation.util.determine_fuel_amount(energy_consumption, machine_proto.burner,
+          fuel_proto.fuel_value, timescale)
+
+        local fuel_class = structures.class.init()
         local fuel = {type=fuel_proto.type, name=fuel_proto.name, amount=fuel_amount}
-        structures.class.add(Fuel, fuel)
-        structures.aggregate.add(aggregate, "Fuel", fuel)
+        structures.class.add(fuel_class, fuel)
 
-        -- This is to work around the fuel not being detected as a possible product
-        structures.aggregate.add(aggregate, "Product", fuel)
-        structures.aggregate.subtract(aggregate, "Ingredient", fuel)
+        -- Add fuel to the aggregate, consuming this line's byproducts first, if possible
+        structures.class.balance_items(fuel_class, aggregate, "Byproduct", "Product")
 
         energy_consumption = 0  -- set electrical consumption to 0 when fuel is used
+
+    elseif machine_proto.energy_type == "void" then
+        energy_consumption = 0  -- set electrical consumption to 0 while still polluting
     end
 
     -- Include beacon energy consumption
@@ -279,7 +253,7 @@ function model.update_line(line_data, aggregate)
     aggregate.energy_consumption = aggregate.energy_consumption + energy_consumption
     aggregate.pollution = aggregate.pollution + pollution
 
-    
+
     -- Update the actual line with the calculated results
     calculation.interface.set_line_result {
         player_index = aggregate.player_index,
@@ -293,6 +267,6 @@ function model.update_line(line_data, aggregate)
         Product = Product,
         Byproduct = Byproduct,
         Ingredient = Ingredient,
-        Fuel = Fuel
+        fuel_amount = fuel_amount
     }
 end

@@ -1,3 +1,15 @@
+-- Determine the active mods compatible with the alt-action setting
+local alt_action_values = {"none"}
+local compatible_mods = {
+    [1] = {internal_name = "fnei", name = "FNEI"},
+    [2] = {internal_name = "wiiruf", name = "what-is-it-really-used-for"},
+    [3] = {internal_name = "recipebook", name = "RecipeBook"}
+}
+
+for _, mod in ipairs(compatible_mods) do
+    if mods[mod.name] then table.insert(alt_action_values, mod.internal_name) end
+end
+
 data:extend({
     {
         type = "bool-setting",
@@ -7,19 +19,12 @@ data:extend({
         order = "a"
     },
     {
-        type = "bool-setting",
-        name = "fp_pause_on_interface",
-        setting_type = "runtime-per-user",
-        default_value = false,
-        order = "b"
-    },
-    {
         type = "int-setting",
         name = "fp_subfactory_items_per_row",
         setting_type = "runtime-per-user",
         default_value = 8,
         allowed_values = {6, 7, 8, 9, 10, 11, 12},
-        order = "c"
+        order = "b"
     },
     {
         type = "int-setting",
@@ -27,6 +32,14 @@ data:extend({
         setting_type = "runtime-per-user",
         default_value = 14,
         allowed_values = {8, 10, 12, 14, 16, 18, 20},
+        order = "c"
+    },
+    {
+        type = "string-setting",
+        name = "fp_alt_action",
+        setting_type = "runtime-per-user",
+        default_value = "none",
+        allowed_values = alt_action_values,
         order = "d"
     },
     {
@@ -51,14 +64,5 @@ data:extend({
         setting_type = "runtime-per-user",
         default_value = false,
         order = "g"
-    },
-    {
-        type = "double-setting",
-        name = "fp_indicate_rounding",
-        setting_type = "runtime-per-user",
-        default_value = 0,
-        minimum_value = 0,
-        maximum_value = 0.4,
-        order = "h"
     }
 })
