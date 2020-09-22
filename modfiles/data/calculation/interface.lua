@@ -142,7 +142,7 @@ function calculation.start_line_by_line_solver(player, subfactory, refresh)
         player_table.active_subfactory = nil
     end
 
-    if refresh then refresh_main_dialog(player) end
+    if refresh then main_dialog.refresh(player) end
 end
 
 -- Updates the given subfactory's ingredient satisfactions
@@ -163,11 +163,11 @@ function calculation.start_matrix_solver(player, subfactory, refresh, show_dialo
     if num_rows~=num_cols then show_dialog = true end
     
     if refresh and show_dialog then
-        refresh_main_dialog(player)
+        main_dialog.refresh(player)
         -- only show dialog if no other dialogs open (otherwise this crashes the game)
         local ui_state = get_ui_state(player)
         if ui_state.modal_dialog_type == nil then
-            enter_modal_dialog(player, dialog_settings)
+            modal_dialog.enter(player, dialog_settings)
         end
     elseif num_rows==num_cols then
         calculation.run_matrix_solver(player, subfactory, modal_data.free_items, refresh)
@@ -182,7 +182,7 @@ function calculation.run_matrix_solver(player, subfactory, matrix_free_items, re
         matrix_solver.run_matrix_solver(player, subfactory_data, matrix_free_items)
         player_table.active_subfactory = nil
     end
-    if refresh then refresh_main_dialog(player) end
+    if refresh then main_dialog.refresh(player) end
 end
 
 -- ** INTERFACE **

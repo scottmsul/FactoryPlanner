@@ -1,43 +1,4 @@
-function open_matrix_solver_dialog(flow_modal_dialog, modal_data)
-    local flow = flow_modal_dialog["flow_matrix_solver_items"]
-    if flow == nil then
-        flow = flow_modal_dialog.add{type="flow", name="flow_matrix_solver_items", direction="vertical"}
-        flow.style.bottom_margin=12
-    end
-    flow.add{type="label", name="label_recipes", caption={"fp.matrix_solver_recipes"}}
-    flow.add{type="flow", name="flow_matrix_solver_recipes", direction="horizontal"}
-
-    flow.add{type="label", name="label_ingredients", caption={"fp.matrix_solver_ingredients"}}
-    flow.add{type="flow", name="flow_matrix_solver_ingredients", direction="horizontal"}
-
-    flow.add{type="label", name="label_products", caption={"fp.matrix_solver_products"}}
-    flow.add{type="flow", name="flow_matrix_solver_products", direction="horizontal"}
-
-    flow.add{type="label", name="label_byproducts", caption={"fp.matrix_solver_byproducts"}}
-    flow.add{type="flow", name="flow_matrix_solver_byproducts", direction="horizontal"}
-
-    flow.add{type="label", name="label_eliminated_items", caption={"fp.matrix_solver_eliminated"}}
-    flow.add{type="flow", name="flow_matrix_solver_eliminated_items", direction="horizontal"}
-
-    flow.add{type="label", name="label_free_items", caption={"fp.matrix_solver_free"}}
-    flow.add{type="flow", name="flow_matrix_solver_free_items", direction="horizontal"}
-
-    flow.add{type="label", name="label_num_rows"}
-    flow.add{type="label", name="label_num_cols"}
-
-    refresh_matrix_solver_items(flow_modal_dialog, modal_data)
-end
-
-function close_matrix_solver_dialog(flow_modal_dialog, action, data)
-    -- all I care about is the modal_data, the data parameter was empty even when I tried defining get_matrix_solver_condition_instructions
-    local player = game.players[flow_modal_dialog.player_index]
-    local ui_state = get_ui_state(player)
-    local modal_data = ui_state.modal_data
-    local subfactory = ui_state.context.subfactory
-    local refresh = modal_data["refresh"]
-
-    calculation.run_matrix_solver(player, subfactory, modal_data.free_items, refresh)
-end
+matrix_solver_dialog = {}
 
 function get_matrix_solver_condition_instructions(modal_data)
     return {
@@ -105,7 +66,7 @@ function get_item_button(item_id, item_variable_type, linear_dependence_data)
 end
 
 function get_item(item_id)
-    local split_string = cutil.split(item_id, "_")
+    local split_string = split_string(item_id, "_")
     local item_type_id = split_string[1]
     local item_id = split_string[2]
     return global.all_items.types[item_type_id].items[item_id]
@@ -114,8 +75,8 @@ end
 function handle_matrix_solver_free_item_press(player, item_id)
     local ui_state = get_ui_state(player)
     local modal_data = ui_state.modal_data
-    cutil.array.remove(modal_data.free_items, item_id)
-    cutil.array.insert(modal_data.eliminated_items, item_id)
+    matrix_solver.remove(modal_data.free_items, item_id)
+    matrix_solver.insert(modal_data.eliminated_items, item_id)
     local flow_modal_dialog = player.gui.screen["fp_frame_modal_dialog"]["flow_modal_dialog"]
     refresh_matrix_solver_items(flow_modal_dialog, modal_data)
 end
@@ -123,14 +84,13 @@ end
 function handle_matrix_solver_eliminated_item_press(player, item_id)
     local ui_state = get_ui_state(player)
     local modal_data = ui_state.modal_data
-    cutil.array.remove(modal_data.eliminated_items, item_id)
-    cutil.array.insert(modal_data.free_items, item_id)
+    matrix_solver.remove(modal_data.eliminated_items, item_id)
+    matrix_solver.insert(modal_data.free_items, item_id)
     local flow_modal_dialog = player.gui.screen["fp_frame_modal_dialog"]["flow_modal_dialog"]
     refresh_matrix_solver_items(flow_modal_dialog, modal_data)
 end
 
-function refresh_matrix_solver_items(flow_modal_dialog, modal_data)
-    local player = game.players[flow_modal_dialog.player_index]
+function refresh_matrix_solver_items(player, modal_data, module_frame)
     local ui_state = get_ui_state(player)
     local subfactory = ui_state.context.subfactory
     local linear_dependence_data = matrix_solver.get_linear_dependence_data(player, subfactory, modal_data)
@@ -138,7 +98,7 @@ function refresh_matrix_solver_items(flow_modal_dialog, modal_data)
     -- save this for the condition instructions
     modal_data.linear_dependence_data = linear_dependence_data
 
-    local recipe_buttons = flow_modal_dialog["flow_matrix_solver_items"]["flow_matrix_solver_recipes"]
+    local recipe_buttons = module_frame["flow_matrix_solver_items"]["flow_matrix_solver_recipes"]
     local recipes = modal_data.recipes
     recipe_buttons.clear()
     for i, recipe_id in ipairs(recipes) do
@@ -151,35 +111,35 @@ function refresh_matrix_solver_items(flow_modal_dialog, modal_data)
             sprite=sprite, tooltip=tooltip, style=button_style, enabled=false}
     end
 
-    local ingredient_buttons = flow_modal_dialog["flow_matrix_solver_items"]["flow_matrix_solver_ingredients"]
+    local ingredient_buttons = module_frame["flow_matrix_solver_items"]["flow_matrix_solver_ingredients"]
     local ingredients = modal_data.ingredients
     ingredient_buttons.clear()
     for _, item_id in ipairs(ingredients) do
         ingredient_buttons.add(get_item_button(item_id, "ingredient", linear_dependence_data))
     end
 
-    local product_buttons = flow_modal_dialog["flow_matrix_solver_items"]["flow_matrix_solver_products"]
+    local product_buttons = module_frame["flow_matrix_solver_items"]["flow_matrix_solver_products"]
     local products = modal_data.products
     product_buttons.clear()
     for _, item_id in ipairs(products) do
         product_buttons.add(get_item_button(item_id, "product", linear_dependence_data))
     end
 
-    local byproduct_buttons = flow_modal_dialog["flow_matrix_solver_items"]["flow_matrix_solver_byproducts"]
+    local byproduct_buttons = module_frame["flow_matrix_solver_items"]["flow_matrix_solver_byproducts"]
     local byproducts = modal_data.byproducts
     byproduct_buttons.clear()
     for _, item_id in ipairs(byproducts) do
         byproduct_buttons.add(get_item_button(item_id, "byproduct", linear_dependence_data))
     end
 
-    local free_buttons = flow_modal_dialog["flow_matrix_solver_items"]["flow_matrix_solver_free_items"]
+    local free_buttons = module_frame["flow_matrix_solver_items"]["flow_matrix_solver_free_items"]
     local free_items = modal_data.free_items
     free_buttons.clear()
     for _, item_id in ipairs(free_items) do
         free_buttons.add(get_item_button(item_id, "free", linear_dependence_data))
     end
 
-    local eliminated_buttons = flow_modal_dialog["flow_matrix_solver_items"]["flow_matrix_solver_eliminated_items"]
+    local eliminated_buttons = module_frame["flow_matrix_solver_items"]["flow_matrix_solver_eliminated_items"]
     local eliminated_items = modal_data.eliminated_items
     eliminated_buttons.clear()
     for _, item_id in ipairs(eliminated_items) do
@@ -187,7 +147,70 @@ function refresh_matrix_solver_items(flow_modal_dialog, modal_data)
     end
 
     local num_rows = #ingredients + #products + #byproducts + #eliminated_items + #free_items
-    flow_modal_dialog["flow_matrix_solver_items"]["label_num_rows"].caption = {"", {"fp.matrix_solver_total_rows"}, ": ", num_rows}
+    module_frame["flow_matrix_solver_items"]["label_num_rows"].caption = {"", {"fp.matrix_solver_total_rows"}, ": ", num_rows}
     local num_cols = #recipes + #ingredients + #byproducts + #free_items
-    flow_modal_dialog["flow_matrix_solver_items"]["label_num_cols"].caption = {"", {"fp.matrix_solver_total_cols"}, ": ", num_cols}
+    module_frame["flow_matrix_solver_items"]["label_num_cols"].caption = {"", {"fp.matrix_solver_total_cols"}, ": ", num_cols}
 end
+
+-- ** TOP LEVEL **
+matrix_solver_dialog.dialog_settings = (function(_) return {
+    caption="fp.matrix_solver_title",
+    create_content_frame = true,
+    force_auto_center = true
+} end)
+
+-- todo: add buttons
+matrix_solver_dialog.gui_events = {}
+
+function matrix_solver_dialog.open(player, modal_data)
+    -- local flow = flow_modal_dialog["flow_matrix_solver_items"]
+    local ui_elements = modal_data.ui_elements
+    
+    -- literally copied from modules_dialog, no idea what I'm doing
+    local function add_bordered_frame()
+        local frame = ui_elements.content_frame.add{type="frame", style="fp_frame_bordered_stretch"}
+        frame.style.padding = 8
+        return frame
+    end
+    
+    local module_frame = add_bordered_frame()
+    ui_elements.module_frame = module_frame
+    
+    if flow == nil then
+        flow = module_frame.add{type="flow", name="flow_matrix_solver_items", direction="vertical"}
+        flow.style.bottom_margin=12
+    end
+    flow.add{type="label", name="label_recipes", caption={"fp.matrix_solver_recipes"}}
+    flow.add{type="flow", name="flow_matrix_solver_recipes", direction="horizontal"}
+
+    flow.add{type="label", name="label_ingredients", caption={"fp.matrix_solver_ingredients"}}
+    flow.add{type="flow", name="flow_matrix_solver_ingredients", direction="horizontal"}
+
+    flow.add{type="label", name="label_products", caption={"fp.matrix_solver_products"}}
+    flow.add{type="flow", name="flow_matrix_solver_products", direction="horizontal"}
+
+    flow.add{type="label", name="label_byproducts", caption={"fp.matrix_solver_byproducts"}}
+    flow.add{type="flow", name="flow_matrix_solver_byproducts", direction="horizontal"}
+
+    flow.add{type="label", name="label_eliminated_items", caption={"fp.matrix_solver_eliminated"}}
+    flow.add{type="flow", name="flow_matrix_solver_eliminated_items", direction="horizontal"}
+
+    flow.add{type="label", name="label_free_items", caption={"fp.matrix_solver_free"}}
+    flow.add{type="flow", name="flow_matrix_solver_free_items", direction="horizontal"}
+
+    flow.add{type="label", name="label_num_rows"}
+    flow.add{type="label", name="label_num_cols"}
+
+    refresh_matrix_solver_items(player, modal_data, module_frame)
+end
+
+function matrix_solver_dialog.close(player, modal_data)
+    -- all I care about is the modal_data, the data parameter was empty even when I tried defining get_matrix_solver_condition_instructions
+    local ui_state = get_ui_state(player)
+    local modal_data = ui_state.modal_data
+    local subfactory = ui_state.context.subfactory
+    local refresh = modal_data["refresh"]
+
+    calculation.run_matrix_solver(player, subfactory, modal_data.free_items, refresh)
+end
+

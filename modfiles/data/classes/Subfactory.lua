@@ -12,10 +12,6 @@ function Subfactory.init(name, icon, timescale_setting)
         pollution = 0,
         notes = "",
         mining_productivity = nil,
-        Product = Collection.init(),
-        Byproduct = Collection.init(),
-        Ingredient = Collection.init(),
-        Floor = Collection.init(),
         Product = Collection.init("Item"),
         Byproduct = Collection.init("Item"),
         Ingredient = Collection.init("Item"),
@@ -25,7 +21,7 @@ function Subfactory.init(name, icon, timescale_setting)
         item_request_proxy = nil,
         valid = true,
         mod_version = global.mod_version,
-        class = "Subfactory",
+        class = "Subfactory"
     }
 
     -- Initialize the subfactory with an empty top floor

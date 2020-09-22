@@ -41,7 +41,7 @@ function matrix_solver.get_item_key(item_type_name, item_name)
 end
 
 function matrix_solver.get_item(item_key)
-    local split_str = cutil.split(item_key, "_")
+    local split_str = split_string(item_key, "_")
     local item_type_id = split_str[1]
     local item_id = split_str[2]
     return global.all_items.types[item_type_id].items[item_id]
@@ -49,7 +49,7 @@ end
 
 -- this is really only used for debugging
 function matrix_solver.get_item_name(item_key)
-    local split_str = cutil.split(item_key, "_")
+    local split_str = split_string(item_key, "_")
     local item_type_id = split_str[1]
     local item_id = split_str[2]
     local item_info = global.all_items.types[item_type_id].items[item_id]
@@ -68,7 +68,7 @@ end
 function matrix_solver.print_columns(columns)
     s = 'COLUMNS\n'
     for i, k in ipairs(columns.values) do
-        local col_split_str = cutil.split(k, "_")
+        local col_split_str = split_string(k, "_")
         if col_split_str[1]=="line" then
             s = s..'COL '..i..': '..k..'\n'
         else
@@ -193,7 +193,7 @@ function matrix_solver.get_linear_dependence_data(player, subfactory, modal_data
     local subfactory_data = calculation.interface.get_subfactory_data(player, subfactory)
     local linearly_dependent_cols = matrix_solver.run_matrix_solver(player, subfactory_data, modal_data.free_items, true)
     for col_name, _ in pairs(linearly_dependent_cols) do
-        local col_split_str = cutil.split(col_name, "_")
+        local col_split_str = split_string(col_name, "_")
         if col_split_str[1] == "recipe" then
             local recipe_key = col_split_str[2]
             linear_dependence_data.linearly_dependent_recipes[recipe_key] = true
@@ -206,8 +206,8 @@ function matrix_solver.get_linear_dependence_data(player, subfactory, modal_data
     if #linearly_dependent_cols == 0 and num_cols < num_rows then
         local eliminated_items = modal_data.eliminated_items
         for _, eliminated_item in ipairs(eliminated_items) do
-            local curr_free_items = cutil.shallowcopy(modal_data.free_items)
-            cutil.array.insert(curr_free_items, eliminated_item)
+            local curr_free_items = matrix_solver.shallowcopy(modal_data.free_items)
+            matrix_solver.insert(curr_free_items, eliminated_item)
             linearly_dependent_cols = matrix_solver.run_matrix_solver(player, subfactory_data, curr_free_items, true)
             if next(linearly_dependent_cols) == nil then
                 linear_dependence_data.potential_free_items[eliminated_item] = true
@@ -258,7 +258,7 @@ function matrix_solver.run_matrix_solver(player, subfactory_data, matrix_free_it
         local linearly_dependent_variables = {}
         for col, _ in pairs(linearly_dependent_cols) do
             local col_name = columns.values[col]
-            local col_split_str = cutil.split(col_name, "_")
+            local col_split_str = split_string(col_name, "_")
             if col_split_str[1] == "line" then
                 local floor = subfactory_data.top_floor
                 for i=2, #col_split_str-1 do
@@ -307,7 +307,7 @@ function matrix_solver.run_matrix_solver(player, subfactory_data, matrix_free_it
                 Product = line_aggregate.Product,
                 Byproduct = line_aggregate.Byproduct,
                 Ingredient = line_aggregate.Ingredient,
-                Fuel = line_aggregate.Fuel
+                fuel_amount = nil -- TODO: fix this
             }
         end
         return floor_aggregate
@@ -320,7 +320,7 @@ function matrix_solver.run_matrix_solver(player, subfactory_data, matrix_free_it
     -- set main_aggregate free variables
     for item_line_key, _ in pairs(free_variables) do
         local col_num = columns.map[item_line_key]
-        local split_str = cutil.split(item_line_key, "_")
+        local split_str = split_string(item_line_key, "_")
         local item_key = split_str[2].."_"..split_str[3]
         local item = matrix_solver.get_item(item_key)
         local amount = matrix[col_num][#columns.values+1]
@@ -338,7 +338,7 @@ function matrix_solver.run_matrix_solver(player, subfactory_data, matrix_free_it
         local item_key = matrix_solver.get_item_key(product.proto.type, product.proto.name)
         if subfactory_metadata.unproduced_outputs[item_key] then
             local item = matrix_solver.get_item(item_key)
-            structures.aggregate.add(main_aggregate, "Product", item, product.required_amount)
+            structures.aggregate.add(main_aggregate, "Product", item, product.amount)
         end
     end
 
@@ -384,8 +384,8 @@ function matrix_solver.consolidate(aggregate)
             end
         end
     end
-    compare_classes("Fuel", "Product")
-    compare_classes("Fuel", "Byproduct")
+    -- compare_classes("Fuel", "Product")
+    -- compare_classes("Fuel", "Byproduct")
     compare_classes("Ingredient", "Product")
     compare_classes("Ingredient", "Byproduct")
 end
@@ -428,12 +428,12 @@ function matrix_solver.get_lines_metadata(lines, player_index)
                 line_inputs[item_key] = true
             end
         end
-        for item_type_name, item_data in pairs(line_aggregate.Fuel) do
-            for item_name, _ in pairs(item_data) do
-                local item_key = matrix_solver.get_item_key(item_type_name, item_name)
-                line_inputs[item_key] = true
-            end
-        end
+        -- for item_type_name, item_data in pairs(line_aggregate.Fuel) do
+        --     for item_name, _ in pairs(item_data) do
+        --         local item_key = matrix_solver.get_item_key(item_type_name, item_name)
+        --         line_inputs[item_key] = true
+        --     end
+        -- end
         for item_type_name, item_data in pairs(line_aggregate.Product) do
             for item_name, _ in pairs(item_data) do
                 local item_key = matrix_solver.get_item_key(item_type_name, item_name)
@@ -477,7 +477,7 @@ function matrix_solver.get_matrix(subfactory_data, rows, columns)
     -- loop over columns since it's easier to look up items for lines/free vars than vice-versa
     for col_num=1, #columns.values do
         local col_str = columns.values[col_num]
-        local col_split_str = cutil.split(col_str, "_")
+        local col_split_str = split_string(col_str, "_")
         local col_type = col_split_str[1]
         if col_type == "item" then
             local item_id = col_split_str[2].."_"..col_split_str[3]
@@ -511,13 +511,13 @@ function matrix_solver.get_matrix(subfactory_data, rows, columns)
                 end
             end
 
-            for item_type_name, items in pairs(line_aggregate.Fuel) do
-                for item_name, amount in pairs(items) do
-                    local item_key = matrix_solver.get_item_key(item_type_name, item_name)
-                    local row_num = rows.map[item_key]
-                    matrix[row_num][col_num] = matrix[row_num][col_num] - amount
-                end
-            end
+            -- for item_type_name, items in pairs(line_aggregate.Fuel) do
+            --     for item_name, amount in pairs(items) do
+            --         local item_key = matrix_solver.get_item_key(item_type_name, item_name)
+            --         local row_num = rows.map[item_key]
+            --         matrix[row_num][col_num] = matrix[row_num][col_num] - amount
+            --     end
+            -- end
         end
     end
 
@@ -527,7 +527,7 @@ function matrix_solver.get_matrix(subfactory_data, rows, columns)
         local row_num = rows.map[item_id]
         -- will be nil for unproduced outputs
         if row_num ~= nil then
-            local amount = product.required_amount
+            local amount = product.amount
             matrix[row_num][#columns.values+1] = amount
         end
     end
@@ -733,4 +733,48 @@ function matrix_solver.find_linearly_dependent_cols(matrix)
         end
     end
     return col_set
+end
+
+-- utility function that removes from a sorted array in place
+function matrix_solver.remove(orig_table, value)
+    local i = 1
+    local found = false
+    while i<=#orig_table and (not found) do
+        local curr = orig_table[i]
+        if curr >= value then
+            found = true
+        end
+        if curr == value then
+            table.remove(orig_table, i)
+        end
+        i = i+1
+    end
+end
+
+-- utility function that inserts into a sorted array in place
+function matrix_solver.insert(orig_table, value)
+    local i = 1
+    local found = false
+    while i<=#orig_table and (not found) do
+        local curr = orig_table[i]
+        if curr >= value then
+            found=true
+        end
+        if curr > value then
+            table.insert(orig_table, i, value)
+        end
+        i = i+1
+    end
+    if not found then
+        table.insert(orig_table, value)
+    end
+end
+
+-- Shallowly and naively copys the base level of the given table
+function matrix_solver.shallowcopy(table)
+    local copy = {}
+    for key, value in pairs(table) do
+        copy[key] = value
+    end
+    return copy
 end
