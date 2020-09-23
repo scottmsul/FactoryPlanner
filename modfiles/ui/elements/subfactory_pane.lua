@@ -229,21 +229,23 @@ end
 
 -- Handles click on a subfactory pane byproduct button
 function subfactory_pane.handle_byproduct_element_click(player, byproduct_id, click, _, _, alt)
-    local subfactory = get_context(player).subfactory
+    local context = get_context(player)
+    local subfactory = context.subfactory
     local byproduct = Subfactory.get(subfactory, "Byproduct", byproduct_id)
 
     if alt then
         ui_util.execute_alt_action(player, "show_item", {item=byproduct.proto, click=click})
 
-    --[[ elseif ui_util.check_archive_status(player) then
+    elseif ui_util.check_archive_status(player) then
         return
 
+    -- TODO: only allow if prefer matrix solver
     elseif click == "left" then
         local floor = context.floor
         if floor.level == 1 then
             modal_dialog.enter(player, {type="recipe", modal_data={product=byproduct, production_type="consume"}})
         else
             titlebar.enqueue_message(player, {"fp.error_byproduct_wrong_floor"}, "error", 1, true)
-        end ]]
+        end
     end
 end

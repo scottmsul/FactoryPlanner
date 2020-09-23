@@ -489,8 +489,9 @@ function production_handler.handle_item_button_click(player, line_id, class, ite
                 calculation.update(player, context.subfactory, true)
             end
 
-        --[[ elseif item.class == "Byproduct" then
-            modal_dialog.enter(player, {type="recipe", modal_data={product=item, production_type="consume"}}) ]]
+        -- TODO: only allow if prefer matrix solver
+        elseif item.class == "Byproduct" then
+            modal_dialog.enter(player, {type="recipe", modal_data={product=item, production_type="consume"}})
         end
 
     elseif click == "right" then  -- Open the percentage dialog for this item

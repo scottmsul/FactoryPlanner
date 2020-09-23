@@ -414,7 +414,7 @@ script.on_event(defines.events.on_gui_click, function(event)
                   split_string[6], click, direction, event.alt)
             end
         
-        -- Item buttons in the matrix solver dialog
+        --[[ -- Item buttons in the matrix solver dialog
         elseif string.find(element_name, "^fp_sprite%-button_matrix_solver_item_free_%d+_%d+$") then
             local split_string = split_string(element_name, "_")
             local item_id = split_string[7].."_"..split_string[8]
@@ -424,6 +424,7 @@ script.on_event(defines.events.on_gui_click, function(event)
             local split_string = split_string(element_name, "_")
             local item_id = split_string[7].."_"..split_string[8]
             handle_matrix_solver_eliminated_item_press(player, item_id)
+        --]]
 
         else
             event_handler.handle_gui_event(event)
