@@ -284,7 +284,7 @@ function matrix_solver.run_matrix_solver(player, subfactory_data, matrix_free_it
             if line.subfloor == nil then
                 local col_num = columns.map[line_key]
                 local machine_count = matrix[col_num][#columns.values+1] -- want the jth entry in the last column (output of row-reduction)
-                line_aggregate = matrix_solver.get_line_aggregate(line, subfactory_data.player_index, floor.id, machine_count, subfactory_metadata, free_variables)
+                line_aggregate = matrix_solver.get_line_aggregate(line, subfactory_data.player_index, floor.id, machine_count, false, subfactory_metadata, free_variables)
             else
                 line_aggregate = set_line_results(prefix.."_"..i, line.subfloor)
                 matrix_solver.consolidate(line_aggregate)
@@ -307,7 +307,7 @@ function matrix_solver.run_matrix_solver(player, subfactory_data, matrix_free_it
                 Product = line_aggregate.Product,
                 Byproduct = line_aggregate.Byproduct,
                 Ingredient = line_aggregate.Ingredient,
-                fuel_amount = nil -- TODO: fix this
+                fuel_amount = line_aggregate.fuel_amount
             }
         end
         return floor_aggregate
@@ -421,7 +421,7 @@ function matrix_solver.get_lines_metadata(lines, player_index)
     local line_inputs = {}
     local line_outputs = {}
     for _, line in pairs(lines) do
-        line_aggregate = matrix_solver.get_line_aggregate(line, player_index, 1, 1)
+        line_aggregate = matrix_solver.get_line_aggregate(line, player_index, 1, 1, true)
         for item_type_name, item_data in pairs(line_aggregate.Ingredient) do
             for item_name, _ in pairs(item_data) do
                 local item_key = matrix_solver.get_item_key(item_type_name, item_name)
@@ -493,7 +493,7 @@ function matrix_solver.get_matrix(subfactory_data, rows, columns)
             local line = floor.lines[line_table_id]
 
             -- use amounts for 1 building as matrix entries
-            line_aggregate = matrix_solver.get_line_aggregate(line, subfactory_data.player_index, floor.id, 1)
+            line_aggregate = matrix_solver.get_line_aggregate(line, subfactory_data.player_index, floor.id, 1, true)
 
             for item_type_name, items in pairs(line_aggregate.Product) do
                 for item_name, amount in pairs(items) do
@@ -535,7 +535,7 @@ function matrix_solver.get_matrix(subfactory_data, rows, columns)
     return matrix
 end
 
-function matrix_solver.get_line_aggregate(line_data, player_index, floor_id, machine_count, subfactory_metadata, free_variables)
+function matrix_solver.get_line_aggregate(line_data, player_index, floor_id, machine_count, include_fuel_ingredient, subfactory_metadata, free_variables)
     local line_aggregate = structures.aggregate.init(player_index, floor_id)
     line_aggregate.machine_count = machine_count
     -- the index in the subfactory_data.top_floor.lines table can be different from the line_id!
@@ -570,30 +570,37 @@ function matrix_solver.get_line_aggregate(line_data, player_index, floor_id, mac
 
     -- some of this is copied from model.lua
     -- Determine energy consumption (including potential fuel needs) and pollution
+    local fuel_proto = line_data.fuel_proto
     local energy_consumption = calculation.util.determine_energy_consumption(line_data.machine_proto,
       machine_count, line_data.total_effects)
     local pollution = calculation.util.determine_pollution(line_data.machine_proto, line_data.recipe_proto,
       line_data.fuel_proto, line_data.total_effects, energy_consumption)
 
-    local Fuel = structures.class.init()
-    local burner = line_data.machine_proto.burner
+    local fuel_amount = nil
+    if fuel_proto ~= nil then  -- Seeing a fuel_proto here means it needs to be re-calculated
+        fuel_amount = calculation.util.determine_fuel_amount(energy_consumption, line_data.machine_proto.burner,
+          line_data.fuel_proto.fuel_value, timescale)
 
-    if burner ~= nil and burner.categories["chemical"] then  -- only handles chemical fuels for now
-        local fuel_proto = line_data.fuel_proto  -- Lines without subfloors will always have a fuel_proto attached
-        local fuel_amount = calculation.util.determine_fuel_amount(energy_consumption, burner,
-          fuel_proto.fuel_value, line_data.timescale)
-
-        local fuel = {type=fuel_proto.type, name=fuel_proto.name, amount=fuel_amount}
-        structures.class.add(Fuel, fuel)
-        structures.aggregate.add(line_aggregate, "Fuel", fuel)
+        if include_fuel_ingredient then
+            local fuel = {type=fuel_proto.type, name=fuel_proto.name, amount=fuel_amount}
+            structures.aggregate.add(line_aggregate, "Ingredient", fuel, fuel_amount)
+        end
 
         energy_consumption = 0  -- set electrical consumption to 0 when fuel is used
+
+    elseif line_data.machine_proto.energy_type == "void" then
+        energy_consumption = 0  -- set electrical consumption to 0 while still polluting
     end
+
+    -- TODO: (possibly) Include beacon energy consumption (?)
 
     line_aggregate.energy_consumption = energy_consumption
     line_aggregate.pollution = pollution
 
     matrix_solver.consolidate(line_aggregate)
+
+    -- needed for calculation.interface.set_line_result
+    line_aggregate.fuel_amount = fuel_amount
 
     return line_aggregate
 end

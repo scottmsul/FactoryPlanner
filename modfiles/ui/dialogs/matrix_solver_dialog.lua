@@ -1,50 +1,14 @@
 matrix_solver_dialog = {}
 
-function get_matrix_solver_condition_instructions(modal_data)
-    return {
-        data = {
-            num_rows = (function(flow_modal_dialog)
-                -- can't use the parent function's modal_data since it doesn't get updated from clicking on free/eliminated
-                local player = game.players[flow_modal_dialog.player_index]
-                local ui_state = get_ui_state(player)
-                local modal_data = ui_state.modal_data
-                return #modal_data.ingredients + #modal_data.products + #modal_data.byproducts + #modal_data.eliminated_items + #modal_data.free_items
-            end),
-            num_cols = (function(flow_modal_dialog)
-                local player = game.players[flow_modal_dialog.player_index]
-                local ui_state = get_ui_state(player)
-                local modal_data = ui_state.modal_data
-                return #modal_data.recipes + #modal_data.ingredients + #modal_data.byproducts + #modal_data.free_items
-            end),
-            linear_dependence_data = (function(flow_modal_dialog)
-                local player = game.players[flow_modal_dialog.player_index]
-                local ui_state = get_ui_state(player)
-                local modal_data = ui_state.modal_data
-                return modal_data.linear_dependence_data
-            end)
-        },
-        conditions = {
-            [1] = {
-                label = "Number of rows must match number of columns",
-                check = (function(data)
-                    return (data.num_rows ~= data.num_cols)
-                end),
-                show_on_edit=true -- not sure what this does
-            },
-            [2] = {
-                label = "Columns must be linearly independent",
-                check = (function(data)
-                    return (next(data.linear_dependence_data.linearly_dependent_recipes) ~= nil)
-                                or (next(data.linear_dependence_data.linearly_dependent_items) ~= nil)
-                end),
-                show_on_edit=true
-            }
-        }
-    }
+local function get_item(item_id)
+    local split_string = split_string(item_id, "_")
+    local item_type_id = split_string[1]
+    local item_id = split_string[2]
+    return global.all_items.types[item_type_id].items[item_id]
 end
 
 -- item_variable_type is either "eliminated" or "free"
-function get_item_button(item_id, item_variable_type, linear_dependence_data)
+local function get_item_button(item_id, item_variable_type, linear_dependence_data)
     local style=nil
     if linear_dependence_data.linearly_dependent_items[item_id] then
         style = "fp_button_icon_large_red"
@@ -65,32 +29,23 @@ function get_item_button(item_id, item_variable_type, linear_dependence_data)
     }
 end
 
-function get_item(item_id)
-    local split_string = split_string(item_id, "_")
-    local item_type_id = split_string[1]
-    local item_id = split_string[2]
-    return global.all_items.types[item_type_id].items[item_id]
+local function update_dialog_submit_button(modal_data)
+    local message = nil
+
+    local num_rows = #modal_data.ingredients + #modal_data.products + #modal_data.byproducts + #modal_data.eliminated_items + #modal_data.free_items
+    local num_cols = #modal_data.recipes + #modal_data.ingredients + #modal_data.byproducts + #modal_data.free_items
+    if num_rows ~= num_cols then
+        -- TODO: move to config
+        message = "Number of rows must match number of columns"
+    elseif ((next(modal_data.linear_dependence_data.linearly_dependent_recipes) ~= nil)
+                or (next(modal_data.linear_dependence_data.linearly_dependent_items) ~= nil)) then
+        message = "Columns must be linearly independent"
+    end
+
+    modal_dialog.set_submit_button_state(modal_data.ui_elements, (message == nil), message)
 end
 
-function handle_matrix_solver_free_item_press(player, item_id)
-    local modal_data = data_util.get("modal_data", player)
-    matrix_solver.remove(modal_data.free_items, item_id)
-    matrix_solver.insert(modal_data.eliminated_items, item_id)
-    local ui_elements = modal_data.ui_elements
-    local matrix_frame = ui_elements.matrix_frame
-    refresh_matrix_solver_items(player, modal_data, ui_elements.matrix_frame)
-end
-
-function handle_matrix_solver_eliminated_item_press(player, item_id)
-    local modal_data = data_util.get("modal_data", player)
-    matrix_solver.remove(modal_data.eliminated_items, item_id)
-    matrix_solver.insert(modal_data.free_items, item_id)
-    local ui_elements = modal_data.ui_elements
-    local matrix_frame = ui_elements.matrix_frame
-    refresh_matrix_solver_items(player, modal_data, ui_elements.matrix_frame)
-end
-
-function refresh_matrix_solver_items(player, modal_data, matrix_frame)
+local function refresh_matrix_solver_items(player, modal_data, matrix_frame)
     local ui_state = get_ui_state(player)
     local subfactory = ui_state.context.subfactory
     local linear_dependence_data = matrix_solver.get_linear_dependence_data(player, subfactory, modal_data)
@@ -150,6 +105,26 @@ function refresh_matrix_solver_items(player, modal_data, matrix_frame)
     matrix_frame["flow_matrix_solver_items"]["label_num_rows"].caption = {"", {"fp.matrix_solver_total_rows"}, ": ", num_rows}
     local num_cols = #recipes + #ingredients + #byproducts + #free_items
     matrix_frame["flow_matrix_solver_items"]["label_num_cols"].caption = {"", {"fp.matrix_solver_total_cols"}, ": ", num_cols}
+
+    update_dialog_submit_button(modal_data)
+end
+
+local function handle_matrix_solver_free_item_press(player, item_id)
+    local modal_data = data_util.get("modal_data", player)
+    matrix_solver.remove(modal_data.free_items, item_id)
+    matrix_solver.insert(modal_data.eliminated_items, item_id)
+    local ui_elements = modal_data.ui_elements
+    local matrix_frame = ui_elements.matrix_frame
+    refresh_matrix_solver_items(player, modal_data, ui_elements.matrix_frame)
+end
+
+local function handle_matrix_solver_eliminated_item_press(player, item_id)
+    local modal_data = data_util.get("modal_data", player)
+    matrix_solver.remove(modal_data.eliminated_items, item_id)
+    matrix_solver.insert(modal_data.free_items, item_id)
+    local ui_elements = modal_data.ui_elements
+    local matrix_frame = ui_elements.matrix_frame
+    refresh_matrix_solver_items(player, modal_data, ui_elements.matrix_frame)
 end
 
 -- ** TOP LEVEL **
