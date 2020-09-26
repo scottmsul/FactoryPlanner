@@ -241,11 +241,13 @@ function subfactory_pane.handle_byproduct_element_click(player, byproduct_id, cl
 
     -- TODO: only allow if prefer matrix solver
     elseif click == "left" then
-        local floor = context.floor
-        if floor.level == 1 then
-            modal_dialog.enter(player, {type="recipe", modal_data={product=byproduct, production_type="consume"}})
-        else
-            titlebar.enqueue_message(player, {"fp.error_byproduct_wrong_floor"}, "error", 1, true)
+        if data_util.get("settings", player).prefer_matrix_solver then
+            local floor = context.floor
+            if floor.level == 1 then
+                modal_dialog.enter(player, {type="recipe", modal_data={product=byproduct, production_type="consume"}})
+            else
+                titlebar.enqueue_message(player, {"fp.error_byproduct_wrong_floor"}, "error", 1, true)
+            end
         end
     end
 end

@@ -124,7 +124,7 @@ end
 -- ** TOP LEVEL **
 -- Updates the whole subfactory calculations from top to bottom
 function calculation.update(player, subfactory, refresh)
-    if get_settings(player).prefer_matrix_solver then
+    if data_util.get("settings", player).prefer_matrix_solver then
         calculation.start_matrix_solver(player, subfactory, refresh, false)
     else
         calculation.start_line_by_line_solver(player, subfactory, refresh)

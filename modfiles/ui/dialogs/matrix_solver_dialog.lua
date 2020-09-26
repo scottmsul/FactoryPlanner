@@ -134,7 +134,6 @@ matrix_solver_dialog.dialog_settings = (function(_) return {
     force_auto_center = true
 } end)
 
--- todo: add buttons
 matrix_solver_dialog.gui_events = {
     on_gui_click = {
         {
