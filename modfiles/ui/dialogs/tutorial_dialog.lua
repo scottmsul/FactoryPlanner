@@ -1,7 +1,7 @@
 tutorial_dialog = {}
 
 -- ** LOCAL UTIL **
-local tab_definitions = {"interface", "usage", "pro_tips"}
+local tab_definitions = {"interface", "usage", "pro_tips", "matrix_solver"}
 
 function tab_definitions.interface(player, tab, tab_pane)
     tab.caption = {"fp.interface"}
@@ -62,14 +62,15 @@ function tab_definitions.pro_tips(_, tab, tab_pane)
         local label = bordered_frame.add{type="label", caption={"fp.pro_" .. name}}
         label.style.single_line = false
     end
-    
-    -- Matrix solver
-    local matrix_solver_title = table_tutorial.add{type="label", name="label_matrix_solver_title", caption={"fp.matrix_solver_title"}}
-    matrix_solver_title.style.font = "fp-font-bold-20p"
-    matrix_solver_title.style.top_margin = 20
+end
 
-    local matrix_solver_text = table_tutorial.add{type="label", name="label_matrix_solver_text", caption={"fp.matrix_solver_text"}}
-    matrix_solver_text.style.single_line = false
+function tab_definitions.matrix_solver(_, tab, tab_pane)
+    tab.caption = {"fp.matrix_solver_title"}
+
+    local bordered_frame = tab_pane.add{type="frame", style="bordered_frame"}
+    local label_matrix_solver = bordered_frame.add{type="label", caption={"fp.matrix_solver_text"}}
+    label_matrix_solver.style.single_line = false
+    label_matrix_solver.style.padding = 2
 end
 
 
